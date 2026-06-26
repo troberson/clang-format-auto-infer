@@ -1,8 +1,8 @@
 """Tests for optimizer — crossover, mutate, optimize_option_with_values."""
 
-import copy
-from unittest.mock import patch, MagicMock
-import pytest
+from typing import Any
+
+from unittest.mock import patch
 
 from src.optimizer import crossover, mutate, optimize_option_with_values
 from src.data_classes import IslandEvolutionArgs, GeneticAlgorithmLookups, WorkerContext
@@ -58,6 +58,20 @@ class TestCrossover:
         assert parent1["A"]["value"] == "x"
         assert parent2["A"]["value"] == "y"
 
+    def test_picks_from_parent1(self):
+        p1 = {"UseTab": {"type": "str", "value": "Never"}}
+        p2 = {"UseTab": {"type": "str", "value": "Always"}}
+        with patch("src.optimizer.random.random", return_value=0.0):
+            child = crossover(p1, p2)
+        assert child["UseTab"]["value"] == "Never"
+
+    def test_picks_from_parent2(self):
+        p1 = {"UseTab": {"type": "str", "value": "Never"}}
+        p2 = {"UseTab": {"type": "str", "value": "Always"}}
+        with patch("src.optimizer.random.random", return_value=1.0):
+            child = crossover(p1, p2)
+        assert child["UseTab"]["value"] == "Always"
+
 
 class TestOptimizeOptionWithValues:
     @patch("src.optimizer.run_clang_format_and_count_changes")
@@ -69,14 +83,47 @@ class TestOptimizeOptionWithValues:
         flat = {
             "UseTab": {"type": "str", "value": "Never"},
         }
-        lookups = _make_lookups({"UseTab": {"type": "str", "possible_values": ["Never", "Always", "ForIndentation"]}})
+        lookups = _make_lookups(
+            {
+                "UseTab": {
+                    "type": "str",
+                    "possible_values": ["Never", "Always", "ForIndentation"],
+                }
+            }
+        )
         args = _make_island_args(lookups)
         ctx = _make_worker_context()
 
-        result = optimize_option_with_values(flat, "UseTab", ["Never", "Always", "ForIndentation"], args, ctx)
+        result = optimize_option_with_values(
+            flat, "UseTab", ["Never", "Always", "ForIndentation"], args, ctx
+        )
 
         assert result == 5
         assert flat["UseTab"]["value"] == "Always"
+
+    @patch("src.optimizer.run_clang_format_and_count_changes")
+    def test_uses_builder_when_provided(self, mock_fitness):
+        """When a builder is passed, builder.set_value() is used instead of generate_clang_format_config."""
+        from src.clang_format_parser import IncrementalConfigBuilder
+
+        mock_fitness.return_value = 10
+        flat: dict[str, dict[str, str | Any]] = {
+            "UseTab": {"type": "str", "value": "Never"},
+            "ColumnLimit": {"type": "int", "value": 80},
+        }
+        lookups = _make_lookups(
+            {"UseTab": {"type": "str", "possible_values": ["Never", "Always"]}}
+        )
+        args = _make_island_args(lookups)
+        ctx = _make_worker_context()
+        builder = IncrementalConfigBuilder(flat)
+
+        with patch.object(builder, "set_value", wraps=builder.set_value) as mock_set:
+            result = optimize_option_with_values(
+                flat, "UseTab", ["Never", "Always"], args, ctx, builder
+            )
+            assert result == 10
+            mock_set.assert_called()
 
     @patch("src.optimizer.run_clang_format_and_count_changes")
     @patch("src.optimizer.generate_clang_format_config")
@@ -87,11 +134,15 @@ class TestOptimizeOptionWithValues:
         flat = {
             "UseTab": {"type": "str", "value": "Never"},
         }
-        lookups = _make_lookups({"UseTab": {"type": "str", "possible_values": ["Never", "Always"]}})
+        lookups = _make_lookups(
+            {"UseTab": {"type": "str", "possible_values": ["Never", "Always"]}}
+        )
         args = _make_island_args(lookups)
         ctx = _make_worker_context()
 
-        result = optimize_option_with_values(flat, "UseTab", ["Never", "Always"], args, ctx)
+        result = optimize_option_with_values(
+            flat, "UseTab", ["Never", "Always"], args, ctx
+        )
 
         assert result == float("inf")
         assert flat["UseTab"]["value"] == "Never"  # reverted
@@ -105,11 +156,15 @@ class TestOptimizeOptionWithValues:
         flat = {
             "UseTab": {"type": "str", "value": "Never"},
         }
-        lookups = _make_lookups({"UseTab": {"type": "str", "possible_values": ["Never", "Always"]}})
+        lookups = _make_lookups(
+            {"UseTab": {"type": "str", "possible_values": ["Never", "Always"]}}
+        )
         args = _make_island_args(lookups)
         ctx = _make_worker_context()
 
-        result = optimize_option_with_values(flat, "UseTab", ["Never", "Always"], args, ctx)
+        result = optimize_option_with_values(
+            flat, "UseTab", ["Never", "Always"], args, ctx
+        )
 
         assert result == 7
         assert flat["UseTab"]["value"] == "Always"
@@ -123,11 +178,15 @@ class TestOptimizeOptionWithValues:
         flat = {
             "UseTab": {"type": "str", "value": "Never"},
         }
-        lookups = _make_lookups({"UseTab": {"type": "str", "possible_values": ["Never", "Always"]}})
+        lookups = _make_lookups(
+            {"UseTab": {"type": "str", "possible_values": ["Never", "Always"]}}
+        )
         args = _make_island_args(lookups)
         ctx = _make_worker_context()
 
-        result = optimize_option_with_values(flat, "UseTab", ["Never", "Always"], args, ctx)
+        result = optimize_option_with_values(
+            flat, "UseTab", ["Never", "Always"], args, ctx
+        )
 
         assert result == 3
         assert flat["UseTab"]["value"] == "Always"
@@ -145,7 +204,9 @@ class TestOptimizeOptionWithValues:
         args = _make_island_args(lookups)
         ctx = _make_worker_context()
 
-        result = optimize_option_with_values(flat, "BreakBeforeBraces", [True, False], args, ctx)
+        result = optimize_option_with_values(
+            flat, "BreakBeforeBraces", [True, False], args, ctx
+        )
 
         assert result == 3
         assert flat["BreakBeforeBraces"]["value"] is False
@@ -159,14 +220,174 @@ class TestOptimizeOptionWithValues:
         flat = {
             "ColumnLimit": {"type": "int", "value": 80},
         }
-        lookups = _make_lookups({"ColumnLimit": {"type": "int", "possible_values": ["80", "100"]}})
+        lookups = _make_lookups(
+            {"ColumnLimit": {"type": "int", "possible_values": ["80", "100"]}}
+        )
         args = _make_island_args(lookups)
         ctx = _make_worker_context()
 
-        result = optimize_option_with_values(flat, "ColumnLimit", ["80", "100"], args, ctx)
+        result = optimize_option_with_values(
+            flat, "ColumnLimit", ["80", "100"], args, ctx
+        )
 
         assert result == 5
         assert flat["ColumnLimit"]["value"] == 100  # converted to int
+
+    @patch("src.optimizer.run_clang_format_and_count_changes")
+    @patch("src.optimizer.generate_clang_format_config")
+    def test_debug_prints_testing(self, mock_gen, mock_run, capsys):
+        mock_gen.return_value = "config\n"
+        mock_run.return_value = 10
+        lookups = _make_lookups(
+            json_options={"IndentWidth": {"possible_values": ["2", "4"]}}
+        )
+        args = _make_island_args(lookups, debug=True)
+        config = {
+            "UseTab": {"type": "str", "value": "Never"},
+            "IndentWidth": {"type": "int", "value": 4},
+            "BreakBeforeBraces": {"type": "bool", "value": True},
+        }
+        _ = optimize_option_with_values(
+            config, "IndentWidth", ["2", "4"], args, _make_worker_context()
+        )
+        captured = capsys.readouterr()
+        assert "Testing values" in captured.err
+
+    @patch("src.optimizer.run_clang_format_and_count_changes")
+    @patch("src.optimizer.generate_clang_format_config")
+    def test_debug_prints_per_value(self, mock_gen, mock_run, capsys):
+        mock_gen.return_value = "config\n"
+        mock_run.return_value = 10
+        lookups = _make_lookups(
+            json_options={"IndentWidth": {"possible_values": ["2", "4"]}}
+        )
+        args = _make_island_args(lookups, debug=True)
+        config = {
+            "UseTab": {"type": "str", "value": "Never"},
+            "IndentWidth": {"type": "int", "value": 4},
+            "BreakBeforeBraces": {"type": "bool", "value": True},
+        }
+        _ = optimize_option_with_values(
+            config, "IndentWidth", ["2", "4"], args, _make_worker_context()
+        )
+        captured = capsys.readouterr()
+        assert "Testing 'IndentWidth'" in captured.err
+
+    @patch("src.optimizer.run_clang_format_and_count_changes")
+    @patch("src.optimizer.generate_clang_format_config")
+    def test_debug_prints_best_value(self, mock_gen, mock_run, capsys):
+        mock_gen.return_value = "config\n"
+        mock_run.return_value = 10
+        lookups = _make_lookups(
+            json_options={"IndentWidth": {"possible_values": ["2", "4"]}}
+        )
+        args = _make_island_args(lookups, debug=True)
+        config = {
+            "UseTab": {"type": "str", "value": "Never"},
+            "IndentWidth": {"type": "int", "value": 4},
+            "BreakBeforeBraces": {"type": "bool", "value": True},
+        }
+        _ = optimize_option_with_values(
+            config, "IndentWidth", ["2", "4"], args, _make_worker_context()
+        )
+        captured = capsys.readouterr()
+        assert "Best value for" in captured.err
+
+    @patch("src.optimizer.run_clang_format_and_count_changes")
+    @patch("src.optimizer.generate_clang_format_config")
+    def test_bool_string_conversion_true(self, mock_gen, mock_run):
+        mock_gen.return_value = "config\n"
+        mock_run.return_value = 10
+        args = _make_island_args(_make_lookups())
+        config: dict[str, dict[str, Any]] = {
+            "UseTab": {"type": "str", "value": "Never"},
+            "BreakBeforeBraces": {"type": "bool", "value": True},
+        }
+        _ = optimize_option_with_values(
+            config,
+            "BreakBeforeBraces",
+            ["true"],
+            args,
+            _make_worker_context(),
+        )
+        assert config["BreakBeforeBraces"]["value"] is True
+
+    @patch("src.optimizer.run_clang_format_and_count_changes")
+    @patch("src.optimizer.generate_clang_format_config")
+    def test_bool_string_conversion_false(self, mock_gen, mock_run):
+        mock_gen.return_value = "config\n"
+        mock_run.return_value = 10
+        args = _make_island_args(_make_lookups())
+        config: dict[str, dict[str, Any]] = {
+            "UseTab": {"type": "str", "value": "Never"},
+            "BreakBeforeBraces": {"type": "bool", "value": True},
+        }
+        _ = optimize_option_with_values(
+            config,
+            "BreakBeforeBraces",
+            ["false"],
+            args,
+            _make_worker_context(),
+        )
+        assert config["BreakBeforeBraces"]["value"] is False
+
+    @patch("src.optimizer.run_clang_format_and_count_changes")
+    @patch("src.optimizer.generate_clang_format_config")
+    def test_bool_capitalized_string_conversion(self, mock_gen, mock_run):
+        mock_gen.return_value = "config\n"
+        mock_run.return_value = 10
+        args = _make_island_args(_make_lookups())
+        config: dict[str, dict[str, Any]] = {
+            "UseTab": {"type": "str", "value": "Never"},
+            "BreakBeforeBraces": {"type": "bool", "value": True},
+        }
+        _ = optimize_option_with_values(
+            config,
+            "BreakBeforeBraces",
+            ["True", "False"],
+            args,
+            _make_worker_context(),
+        )
+        assert isinstance(config["BreakBeforeBraces"]["value"], bool)
+
+    @patch("src.optimizer.run_clang_format_and_count_changes")
+    @patch("src.optimizer.generate_clang_format_config")
+    def test_string_true_converted_to_bool(self, mock_gen, mock_run):
+        mock_gen.return_value = "config\n"
+        mock_run.return_value = 10
+        args = _make_island_args(_make_lookups())
+        config: dict[str, dict[str, Any]] = {
+            "UseTab": {"type": "str", "value": "Never"},
+            "BreakBeforeBraces": {"type": "bool", "value": True},
+        }
+        _ = optimize_option_with_values(
+            config,
+            "BreakBeforeBraces",
+            ["true"],
+            args,
+            _make_worker_context(),
+        )
+        assert config["BreakBeforeBraces"]["value"] is True
+
+    @patch("src.optimizer.run_clang_format_and_count_changes")
+    @patch("src.optimizer.generate_clang_format_config")
+    def test_int_conversion_failure_skips(self, mock_gen, mock_run, capsys):
+        mock_gen.return_value = "config\n"
+        mock_run.return_value = 10
+        lookups = _make_lookups(
+            json_options={"IndentWidth": {"possible_values": ["not_a_number"]}}
+        )
+        args = _make_island_args(lookups, debug=True)
+        config = {
+            "UseTab": {"type": "str", "value": "Never"},
+            "IndentWidth": {"type": "int", "value": 4},
+            "BreakBeforeBraces": {"type": "bool", "value": True},
+        }
+        _ = optimize_option_with_values(
+            config, "IndentWidth", ["not_a_number"], args, _make_worker_context()
+        )
+        captured = capsys.readouterr()
+        assert "Could not convert" in captured.err
 
 
 class TestMutate:
@@ -179,7 +400,9 @@ class TestMutate:
             "ColumnLimit": {"type": "int", "value": 80},
         }
         lookups = _make_lookups(
-            json_options={"UseTab": {"type": "str", "possible_values": ["Never", "Always"]}},
+            json_options={
+                "UseTab": {"type": "str", "possible_values": ["Never", "Always"]}
+            },
             forced_options={},
         )
         args = _make_island_args(lookups)
@@ -188,7 +411,8 @@ class TestMutate:
         result_config, fitness = mutate(config, args, ctx)
 
         assert fitness == 5
-        assert result_config is not config  # deep copy
+        # mutate() modifies config in-place and returns the same object
+        assert result_config is config
         mock_opt.assert_called_once()
 
     @patch("src.optimizer.optimize_option_with_values")
@@ -200,13 +424,15 @@ class TestMutate:
             "ColumnLimit": {"type": "int", "value": 80},
         }
         lookups = _make_lookups(
-            json_options={"UseTab": {"type": "str", "possible_values": ["Never", "Always"]}},
+            json_options={
+                "UseTab": {"type": "str", "possible_values": ["Never", "Always"]}
+            },
             forced_options={"UseTab": "Always"},
         )
         args = _make_island_args(lookups)
         ctx = _make_worker_context()
 
-        result_config, fitness = mutate(config, args, ctx)
+        result_config, _fitness = mutate(config, args, ctx)
 
         # UseTab is forced, so only ColumnLimit is mutable
         assert result_config["UseTab"]["value"] == "Always"  # forced
@@ -222,7 +448,7 @@ class TestMutate:
         args = _make_island_args(lookups)
         ctx = _make_worker_context()
 
-        result_config, fitness = mutate(config, args, ctx)
+        _result_config, fitness = mutate(config, args, ctx)
 
         assert fitness == float("inf")
 
@@ -236,7 +462,37 @@ class TestMutate:
         ctx = _make_worker_context()
 
         # Should not return inf — bool is mutable
-        with patch("src.optimizer.optimize_option_with_values", return_value=3) as mock_opt:
-            result_config, fitness = mutate(config, args, ctx)
+        with patch(
+            "src.optimizer.optimize_option_with_values", return_value=3
+        ) as mock_opt:
+            _result_config, fitness = mutate(config, args, ctx)
             assert fitness == 3
             mock_opt.assert_called_once()
+
+    @patch("src.optimizer.optimize_option_with_values")
+    def test_debug_prints_no_mutable_options(self, mock_opt, capsys):
+        island_args = _make_island_args(_make_lookups(), debug=True)
+        config = {
+            "UseTab": {"type": "str", "value": "Never"},
+            "IndentWidth": {"type": "int", "value": 4},
+        }
+        _ = mutate(config, island_args, _make_worker_context())
+        captured = capsys.readouterr()
+        assert "No mutable options" in captured.err
+        mock_opt.assert_not_called()
+
+    @patch("src.optimizer.optimize_option_with_values")
+    def test_debug_prints_mutating(self, mock_opt, capsys):
+        mock_opt.return_value = 10
+        lookups = _make_lookups(
+            json_options={"IndentWidth": {"possible_values": ["2", "4"]}}
+        )
+        args = _make_island_args(lookups, debug=True)
+        config = {
+            "UseTab": {"type": "str", "value": "Never"},
+            "IndentWidth": {"type": "int", "value": 4},
+            "BreakBeforeBraces": {"type": "bool", "value": True},
+        }
+        _ = mutate(config, args, _make_worker_context())
+        captured = capsys.readouterr()
+        assert "Mutating" in captured.err

@@ -1,8 +1,6 @@
 """Tests for config_loader — file I/O with temp files."""
 
 import json
-import os
-import tempfile
 import pytest
 from src.config_loader import load_json_option_values, load_forced_options
 
@@ -10,8 +8,16 @@ from src.config_loader import load_json_option_values, load_forced_options
 class TestLoadJsonOptionValues:
     def test_valid_json(self, tmp_path):
         data = [
-            {"name": "AlignConsecutiveAssignments", "type": "bool", "possible_values": ["true", "false"]},
-            {"name": "ColumnLimit", "type": "int", "possible_values": ["80", "100", "120"]},
+            {
+                "name": "AlignConsecutiveAssignments",
+                "type": "bool",
+                "possible_values": ["true", "false"],
+            },
+            {
+                "name": "ColumnLimit",
+                "type": "int",
+                "possible_values": ["80", "100", "120"],
+            },
         ]
         f = tmp_path / "values.json"
         f.write_text(json.dumps(data))
@@ -23,21 +29,21 @@ class TestLoadJsonOptionValues:
         result = load_json_option_values(None)
         assert result == {}
 
-    def test_missing_file_exits(self, tmp_path, capsys):
+    def test_missing_file_exits(self, tmp_path, capsys):  # pyright: ignore[reportUnusedParameter]
         with pytest.raises(SystemExit):
-            load_json_option_values(str(tmp_path / "nonexistent.json"))
+            _ = load_json_option_values(str(tmp_path / "nonexistent.json"))
 
-    def test_invalid_json_exits(self, tmp_path, capsys):
+    def test_invalid_json_exits(self, tmp_path, capsys):  # pyright: ignore[reportUnusedParameter]
         f = tmp_path / "bad.json"
         f.write_text("{not valid json")
         with pytest.raises(SystemExit):
-            load_json_option_values(str(f))
+            _ = load_json_option_values(str(f))
 
-    def test_non_list_json_exits(self, tmp_path, capsys):
+    def test_non_list_json_exits(self, tmp_path, capsys):  # pyright: ignore[reportUnusedParameter]
         f = tmp_path / "dict.json"
         f.write_text('{"key": "value"}')
         with pytest.raises(SystemExit):
-            load_json_option_values(str(f))
+            _ = load_json_option_values(str(f))
 
     def test_skips_items_without_name(self, tmp_path):
         data = [
@@ -74,16 +80,16 @@ class TestLoadForcedOptions:
 
     def test_missing_file_exits(self, tmp_path):
         with pytest.raises(SystemExit):
-            load_forced_options(str(tmp_path / "nonexistent.yml"))
+            _ = load_forced_options(str(tmp_path / "nonexistent.yml"))
 
     def test_invalid_yaml_exits(self, tmp_path):
         f = tmp_path / "bad.yml"
         f.write_text("::: invalid yaml :::")
         with pytest.raises(SystemExit):
-            load_forced_options(str(f))
+            _ = load_forced_options(str(f))
 
     def test_non_dict_yaml_exits(self, tmp_path):
         f = tmp_path / "list.yml"
         f.write_text("- item1\n- item2\n")
         with pytest.raises(SystemExit):
-            load_forced_options(str(f))
+            _ = load_forced_options(str(f))

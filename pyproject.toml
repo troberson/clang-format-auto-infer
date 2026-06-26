@@ -1,2 +1,14 @@
 [tool.pytest.ini_options]
 pythonpath = ["."]
+
+[tool.basedpyright]
+typeCheckingMode = "recommended"
+allowedUntypedLibraries = ["nevergrad"]
+reportUnknownVariableType = false
+reportUnknownArgumentType = false
+reportAny = false
+reportExplicitAny = false
+reportMissingParameterType = false
+reportUnknownParameterType = false
+reportUnknownMemberType = false
+reportUnknownLambdaType = false

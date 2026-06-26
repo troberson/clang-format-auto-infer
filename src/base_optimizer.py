@@ -1,22 +1,28 @@
 from abc import ABC, abstractmethod
-from typing import Dict, List, Any
-from .data_classes import BaseOptimizerConfig, GeneticAlgorithmLookups # Updated import
+from typing import Any
+from .data_classes import BaseOptimizerConfig, GeneticAlgorithmLookups  # Updated import
+
 
 class BaseOptimizer(ABC):
     """
     Abstract base class for clang-format configuration optimizers.
     Defines the interface for different optimization strategies.
     """
+
+    config: BaseOptimizerConfig
+
     def __init__(self, config: BaseOptimizerConfig):
         self.config = config
 
     @abstractmethod
-    def optimize(self,
-                 base_options_info: Dict[str, Any],
-                 repo_paths: List[str],
-                 lookups: GeneticAlgorithmLookups,
-                 file_sample_percentage: float,
-                 random_seed: int) -> Dict[str, Any]:
+    def optimize(
+        self,
+        base_options_info: dict[str, Any],
+        repo_paths: list[str],
+        lookups: GeneticAlgorithmLookups,
+        file_sample_percentage: float,
+        random_seed: int,
+    ) -> dict[str, Any]:
         """
         Abstract method to optimize clang-format configuration.
 
@@ -31,4 +37,4 @@ class BaseOptimizer(ABC):
         Returns:
             dict: The flat dictionary of the best clang-format configuration found.
         """
-        pass
+        pass  # pragma: no cover
