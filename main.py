@@ -14,15 +14,17 @@ from src.clang_format_parser import (
     generate_clang_format_config,
 )
 from src.config_loader import load_json_option_values, load_forced_options
-from src.optimizer import GeneticAlgorithmOptimizer  # Import the GA optimizer class
-from src.nevergrad_optimizer import (
-    NevergradOptimizer,
-)  # New import for Nevergrad optimizer class
-from src.data_classes import (
-    GeneticOptimizationConfig,
-    NevergradConfig,
-    GeneticAlgorithmLookups,
-)  # New import for data classes
+from src.data_classes import GeneticAlgorithmLookups
+from src.optimization_engine import (
+    polish_coordinate_descent,
+    run_island_ga,
+    run_nevergrad_optimization,
+)
+from src.clang_format_adapter import (
+    build_search_space,
+    config_to_flat_options,
+    make_fitness_function,
+)
 from src.utils import run_command
 
 # Global debug flag (will be set from args)
@@ -394,47 +396,55 @@ def main():
 
         optimized_options_info = None
 
-        optimizer: GeneticAlgorithmOptimizer | NevergradOptimizer
+        # Build search space and fitness function
+        search_space = build_search_space(options_info, lookups)
+        initial_config = {k: v.get("value") for k, v in options_info.items()}
+        fitness_fn = make_fitness_function(
+            repo_path=temp_repo_paths[0],
+            process_id=0,
+            lookups=lookups,
+            base_options=options_info,
+            debug=debug_mode,
+            file_sample_percentage=args.file_sample_percentage,
+            random_seed=RANDOM_SEED,
+        )
 
         if args.optimizer == "genetic":
-            # Create OptimizationConfig object for Genetic Algorithm
-            opt_config = GeneticOptimizationConfig(
-                num_iterations=args.iterations,
-                total_population_size=args.population_size,
+            best = run_island_ga(
+                initial_config=initial_config,
+                search_space=search_space,
+                fitness_fn=fitness_fn,
                 num_islands=args.islands,
-                debug=debug_mode,
-                plot_fitness=args.plot_fitness,
-                polish_passes=args.polish_passes,
+                population_size=args.population_size,
+                num_iterations=args.iterations,
                 migration_interval=args.migration_interval,
-                checkpoint_interval=args.checkpoint_interval,
-            )
-            optimizer = GeneticAlgorithmOptimizer(
-                opt_config
-            )  # Pass config to constructor
-            optimized_options_info = optimizer.optimize(
-                options_info,  # Base configuration for population initialization
-                temp_repo_paths,  # Pass the list of temporary repo paths
-                lookups,  # Pass the lookups object
-                args.file_sample_percentage,  # Pass file sampling percentage
-                RANDOM_SEED,  # Pass the fixed random seed
-                args.checkpoint_resume,  # Pass checkpoint resume path
-            )
-        elif args.optimizer == "nevergrad":
-            # Create NevergradConfig object
-            ng_config = NevergradConfig(
-                budget=args.ng_budget,
-                optimizer_name=args.ng_optimizer,
-                num_workers=num_jobs,  # Nevergrad uses num_workers directly
                 debug=debug_mode,
-                plot_fitness=args.plot_fitness,  # New: Pass plot_fitness to NevergradConfig
+                random_seed=RANDOM_SEED,
             )
-            optimizer = NevergradOptimizer(ng_config)  # Pass config to constructor
-            optimized_options_info = optimizer.optimize(
-                options_info,  # Base configuration for Nevergrad instrumentation
-                temp_repo_paths,  # Pass the list of temporary repo paths
-                lookups,  # Pass the lookups object
-                args.file_sample_percentage,  # Pass file sampling percentage
-                RANDOM_SEED,  # Pass the fixed random seed
+            # Polish with coordinate descent
+            if args.polish_passes > 0:
+                polished = polish_coordinate_descent(
+                    config=best.config,
+                    initial_fitness=best.fitness,
+                    search_space=search_space,
+                    fitness_fn=fitness_fn,
+                    max_passes=args.polish_passes,
+                    debug=debug_mode,
+                )
+                best = polished
+            optimized_options_info = config_to_flat_options(best.config, options_info)
+        elif args.optimizer == "nevergrad":
+            result = run_nevergrad_optimization(
+                search_space=search_space,
+                objective=fitness_fn,
+                budget=args.ng_budget,
+                num_workers=num_jobs,
+                optimizer_name=args.ng_optimizer,
+                debug=debug_mode,
+                initial_config=initial_config,
+            )
+            optimized_options_info = config_to_flat_options(
+                result.best_config, options_info
             )
         else:
             print(f"Error: Unknown optimizer '{args.optimizer}'.", file=sys.stderr)

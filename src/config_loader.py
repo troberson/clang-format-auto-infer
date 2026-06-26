@@ -85,11 +85,6 @@ def load_forced_options(file_path):
         flat_forced_options = {}
 
         def flatten_dict(data, current_path=""):
-            if not isinstance(data, dict):  # pragma: no cover
-                # If a non-dict value is encountered, it's the final value for the current path
-                flat_forced_options[current_path] = data
-                return
-
             for key, value in data.items():
                 full_path = f"{current_path}.{key}" if current_path else key
                 if isinstance(value, dict):
