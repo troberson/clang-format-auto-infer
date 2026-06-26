@@ -2,7 +2,7 @@ import sys
 import copy
 import random
 import multiprocessing
-from typing import List, Tuple, Dict, Any
+from typing import List, Tuple, Dict, Any, cast
 
 # Import formatter and config generator
 from .repo_formatter import run_clang_format_and_count_changes
@@ -96,7 +96,8 @@ def optimize_option_with_values(flat_options_info: Dict[str, Any], full_option_p
         # We now consider float('inf') as a valid (but high) result, not an error to skip
         if changes != -1: # Only skip if it's a git-related error (-1)
             # Treat float('inf') as a very high change count
-            print(f"Island {island_args.island_index} (Worker {worker_context.process_id}):   Testing '{full_option_path}'='{value_to_test}' -> Changes: {changes}", file=sys.stderr)
+            if island_args.debug:
+                print(f"Island {island_args.island_index} (Worker {worker_context.process_id}):   Testing '{full_option_path}'='{value_to_test}' -> Changes: {changes}", file=sys.stderr)
             if changes < min_changes:
                 min_changes = changes
                 best_values_candidates = [value_to_test] # New best found, reset list
@@ -120,7 +121,8 @@ def optimize_option_with_values(flat_options_info: Dict[str, Any], full_option_p
     else:
         # Randomly select one of the best values
         best_value = random.choice(best_values_candidates)
-        print(f"Island {island_args.island_index} (Worker {worker_context.process_id}): Best value for '{full_option_path}': {best_value} (changes: {min_changes})", file=sys.stderr)
+        if island_args.debug:
+            print(f"Island {island_args.island_index} (Worker {worker_context.process_id}): Best value for '{full_option_path}': {best_value} (changes: {min_changes})", file=sys.stderr)
         flat_options_info[full_option_path]['value'] = best_value
         return min_changes
 
@@ -307,6 +309,87 @@ def _island_evolution_task_wrapper(args_tuple: Tuple[IslandEvolutionArgs, List[s
     return _evolve_island_generation_task(island_args_for_this_island, worker_context)
 
 
+def _polish_coordinate_descent(best_config: Dict[str, Any], repo_path: str, lookups: GeneticAlgorithmLookups, debug: bool, file_sample_percentage: float, random_seed: int, max_passes: int) -> Tuple[Dict[str, Any], float]:
+    """
+    Sequential coordinate descent polish on the best GA result.
+    Iterates over all mutable options, optimizing each one exhaustively.
+    Repeats passes until no improvements are found or max_passes is reached.
+
+    Returns:
+        tuple: (polished_config, final_fitness)
+    """
+    worker_context = WorkerContext(repo_path=repo_path, process_id=0)
+    island_args = IslandEvolutionArgs(
+        population=[],
+        island_population_size=0,
+        island_index=-1,
+        lookups=lookups,
+        debug=debug,
+        file_sample_percentage=file_sample_percentage,
+        random_seed=random_seed
+    )
+
+    # Collect mutable options once (order is deterministic via sorted keys)
+    mutable_options = []
+    for full_option_path, option_info in sorted(best_config.items()):
+        if full_option_path in lookups.forced_options_lookup:
+            continue
+        if (full_option_path in lookups.json_options_lookup and lookups.json_options_lookup[full_option_path]['possible_values']) or \
+           (option_info['type'] == 'bool'):
+            mutable_options.append(full_option_path)
+
+    if not mutable_options:
+        print("  No mutable options for polish. Skipping.", file=sys.stderr)
+        return best_config, best_config.get('__fitness__', float('inf'))
+
+    # Compute initial fitness
+    current_fitness = run_clang_format_and_count_changes(
+        generate_clang_format_config(best_config),
+        repo_path=repo_path,
+        process_id=worker_context.process_id,
+        debug=debug,
+        file_sample_percentage=file_sample_percentage,
+        random_seed=random_seed
+    )
+
+    print(f"  Starting coordinate descent polish. {len(mutable_options)} mutable options.", file=sys.stderr)
+    print(f"  Initial fitness: {current_fitness}", file=sys.stderr)
+
+    for pass_num in range(1, max_passes + 1):
+        improvements = 0
+        for full_option_path in mutable_options:
+            option_info = best_config[full_option_path]
+            possible_values = []
+            if full_option_path in lookups.json_options_lookup and lookups.json_options_lookup[full_option_path]['possible_values']:
+                possible_values = lookups.json_options_lookup[full_option_path]['possible_values']
+            elif option_info['type'] == 'bool':
+                possible_values = [True, False]
+
+            if not possible_values:
+                continue
+
+            old_fitness = current_fitness
+            new_fitness = optimize_option_with_values(
+                best_config,
+                full_option_path,
+                possible_values,
+                island_args,
+                worker_context
+            )
+            if new_fitness < old_fitness:
+                improvements += 1
+                current_fitness = new_fitness
+
+        print(f"  Polish pass {pass_num}: {improvements} improvements, fitness: {current_fitness}", file=sys.stderr)
+        if improvements == 0:
+            print(f"  Coordinate descent converged after {pass_num} pass(es).", file=sys.stderr)
+            break
+    else:
+        print(f"  Coordinate descent reached max passes ({max_passes}).", file=sys.stderr)
+
+    return best_config, current_fitness
+
+
 def _perform_migration(populations: List[List[Dict[str, Any]]], debug: bool = False):
     """
     Performs migration between islands.
@@ -403,6 +486,7 @@ class GeneticAlgorithmOptimizer(BaseOptimizer):
         num_islands = self.config.num_islands
         debug = self.config.debug
         plot_fitness = self.config.plot_fitness
+        polish_passes = self.config.polish_passes
 
         if num_islands < 1:
             print("Error: Number of islands must be at least 1. Setting to 1.", file=sys.stderr)
@@ -601,6 +685,30 @@ class GeneticAlgorithmOptimizer(BaseOptimizer):
             print("Worker pool shut down.", file=sys.stderr)
 
         print(f"\nGenetic algorithm finished. Best overall fitness: {best_overall_individual['fitness']}", file=sys.stderr)
+
+        # Coordinate descent polish phase (sequential, runs on main process)
+        if polish_passes > 0 and not interrupted:
+            print(f"\n--- Coordinate Descent Polish (max {polish_passes} passes) ---", file=sys.stderr)
+            polish_repo_path = repo_paths[0] if repo_paths else None
+            if polish_repo_path:
+                best_config: Dict[str, Any] = cast(Dict[str, Any], copy.deepcopy(best_overall_individual['config']))
+                best_fitness: float = cast(float, best_overall_individual['fitness'])
+                polished_config, polished_fitness = _polish_coordinate_descent(
+                    best_config,
+                    polish_repo_path,
+                    lookups,
+                    debug,
+                    file_sample_percentage,
+                    random_seed,
+                    polish_passes
+                )
+                if polished_fitness < best_fitness:
+                    best_overall_individual = {'config': polished_config, 'fitness': polished_fitness}
+                    print(f"  Polish improved fitness: {best_overall_individual['fitness']}", file=sys.stderr)
+                else:
+                    print(f"  Polish did not improve fitness. Best remains: {best_overall_individual['fitness']}", file=sys.stderr)
+            else:
+                print("  Skipping polish: no repo paths available.", file=sys.stderr)
 
         # Keep the plot open at the end if it was generated AND optimization was not interrupted
         if plot_fitness and MATPLOTLIB_AVAILABLE and not interrupted:

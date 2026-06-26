@@ -1,8 +1,65 @@
 from bs4 import BeautifulSoup # pyright: ignore
+import argparse
 import requests
+import subprocess
 import sys
 import re
 import json # Import the json library
+
+def get_clang_format_version():
+    """Detect the installed clang-format version string (e.g. '22.1.7')."""
+    try:
+        result = subprocess.run(
+            ["clang-format", "--version"],
+            capture_output=True, text=True, check=True,
+        )
+        # Output looks like "Debian clang-format version 22.1.7 (1)"
+        match = re.search(r'(\d+\.\d+\.\d+)', result.stdout)
+        if match:
+            return match.group(1)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pass
+    return None
+
+
+def build_urls(version_hint):
+    """Build a list of candidate URLs for the given version hint, ordered by preference.
+
+    - 'latest'  -> [trunk docs]
+    - 'X.Y.Z'   -> [X.Y.Z docs, X.Y.0 docs, trunk docs]
+
+    Note: Release docs live under tools/clang/docs/, while trunk uses docs/.
+    """
+    if version_hint == "latest":
+        return ["https://clang.llvm.org/docs/ClangFormatStyleOptions.html"]
+
+    parts = version_hint.split(".")
+    candidates = []
+    # Try exact version first
+    candidates.append(f"https://releases.llvm.org/{version_hint}/tools/clang/docs/ClangFormatStyleOptions.html")
+    # Try major.minor.0 release
+    if len(parts) >= 2:
+        candidates.append(f"https://releases.llvm.org/{parts[0]}.{parts[1]}.0/tools/clang/docs/ClangFormatStyleOptions.html")
+    # Fallback to trunk
+    candidates.append("https://clang.llvm.org/docs/ClangFormatStyleOptions.html")
+    return candidates
+
+
+def resolve_version(arg_version):
+    """Resolve the effective version string.
+
+    If arg_version is None, auto-detect from the installed clang-format.
+    Falls back to 'latest' if detection fails.
+    """
+    if arg_version is not None:
+        return arg_version
+    detected = get_clang_format_version()
+    if detected:
+        print(f"Auto-detected clang-format version: {detected}", file=sys.stderr)
+        return detected
+    print("Warning: Could not auto-detect clang-format version. Using latest docs.", file=sys.stderr)
+    return "latest"
+
 
 def fetch_html_content(url):
     """Fetches HTML content from a given URL."""
@@ -208,8 +265,31 @@ def parse_options(html_content):
     return all_options_data
 
 if __name__ == '__main__':
-    url = "https://clang.llvm.org/docs/ClangFormatStyleOptions.html"
-    html_content = fetch_html_content(url)
+    parser = argparse.ArgumentParser(
+        description="Fetch clang-format style options from LLVM documentation."
+    )
+    parser.add_argument(
+        "--version",
+        default=None,
+        help=(
+            "Clang version to fetch docs for (e.g. '18.1.8', '22.1.7'). "
+            "Use 'latest' for the current trunk docs. "
+            "Defaults to auto-detecting from the installed clang-format."
+        ),
+    )
+    args = parser.parse_args()
+
+    version = resolve_version(args.version)
+    urls = build_urls(version)
+
+    html_content = None
+    fetched_url = None
+    for url in urls:
+        print(f"Fetching from: {url}", file=sys.stderr)
+        html_content = fetch_html_content(url)
+        if html_content:
+            fetched_url = url
+            break
 
     if html_content:
         options_dict = parse_options(html_content)
@@ -225,6 +305,7 @@ if __name__ == '__main__':
                 })
 
             print(json.dumps(options_list, indent=2))
+            print(f"Fetched {len(options_list)} options from: {fetched_url}", file=sys.stderr)
         else:
             print("[]")
             sys.exit(0)

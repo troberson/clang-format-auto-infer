@@ -100,25 +100,31 @@ def run_clang_format_and_count_changes(config_string: str, repo_path: str, proce
             # Catch specific clang-format errors and report them
             error_output = (e.stdout or "") + (e.stderr or "") # Combine stdout and stderr for checking
 
-            if "cannot be used with" in error_output:
-                # This is a known invalid configuration error, treat as high cost
-                print(f"Worker {process_id}: Warning: clang-format reported an invalid configuration ('cannot be used with'). Treating as high cost.", file=sys.stderr)
+            # Patterns that indicate an invalid or incompatible config — treat as high cost.
+            invalid_config_patterns = [
+                "cannot be used with",
+                "Unsuitable",
+                "unknown enumerated scalar",
+                "Error reading .clang-format",
+            ]
+            is_invalid_config = any(p in error_output for p in invalid_config_patterns)
+
+            if is_invalid_config:
                 if debug:
+                    print(f"Worker {process_id}: Warning: clang-format reported an invalid configuration. Treating as high cost.", file=sys.stderr)
                     print(f"Worker {process_id}: Command: {' '.join(e.cmd)}", file=sys.stderr)
                     print(f"Worker {process_id}: Exit code: {e.returncode}", file=sys.stderr)
                     if e.stdout: print(f"Worker {process_id}: Stdout:\n{e.stdout}", file=sys.stderr)
                     if e.stderr: print(f"Worker {process_id}: Stderr:\n{e.stderr}", file=sys.stderr)
-                # Return infinity to signify a very bad configuration
                 return float('inf')
             elif "PLEASE submit a bug report" in error_output:
-                # This is a clang-format crash, treat as high cost
-                print(f"Worker {process_id}: Warning: clang-format crashed with the current configuration. Treating as high cost.", file=sys.stderr)
                 if debug:
+                    print(f"Worker {process_id}: Warning: clang-format crashed with the current configuration. Treating as high cost.", file=sys.stderr)
                     print(f"Worker {process_id}: Command: {' '.join(e.cmd)}", file=sys.stderr)
                     print(f"Worker {process_id}: Exit code: {e.returncode}", file=sys.stderr)
                     if e.stdout: print(f"Worker {process_id}: Stdout:\n{e.stdout}", file=sys.stderr)
                     if e.stderr: print(f"Worker {process_id}: Stderr:\n{e.stderr}", file=sys.stderr)
-                return float('inf') # Return infinity to signify a very bad configuration
+                return float('inf')
             else:
                 # Other clang-format errors are critical, exit
                 print(f"Worker {process_id}: Error running clang-format with the current configuration:", file=sys.stderr)

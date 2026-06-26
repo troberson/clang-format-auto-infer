@@ -19,6 +19,7 @@ class GeneticOptimizationConfig(BaseOptimizerConfig): # Inherit from BaseOptimiz
     total_population_size: int
     num_islands: int
     plot_fitness: bool
+    polish_passes: int = 3  # Max coordinate descent passes after GA convergence
 
 @dataclass
 class NevergradConfig(BaseOptimizerConfig): # Inherit from BaseOptimizerConfig

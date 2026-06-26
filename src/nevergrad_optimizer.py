@@ -190,6 +190,8 @@ class NevergradOptimizer(BaseOptimizer):
 
         # 3. Run the optimization using ask/tell loop
         best_fitness_history = [] # To store best fitness over evaluations
+        best_overall_fitness = float('inf') # Track overall best for improvement reporting
+        cumulative_best = [] # For plotting: monotonically decreasing best
         fig = None
         ax = None
         line = None
@@ -260,26 +262,42 @@ class NevergradOptimizer(BaseOptimizer):
                     # No more tasks to run and budget is exhausted
                     break
 
-                # Wait for at least one future to complete
+                # Wait for at least one future to complete, then batch-process all that are ready.
+                # This amortizes the O(d²) cost of optimizer.tell() across multiple evaluations,
+                # keeping worker processes busy instead of idling while main thread does matrix math.
                 done, _ = concurrent.futures.wait(pending_futures.keys(), return_when=concurrent.futures.FIRST_COMPLETED)
 
-                for completed_future in done:
+                # Drain all completed futures (more may have finished while we waited)
+                completed_batch = list(done)
+                for f in list(pending_futures.keys()):
+                    if f.done() and f not in completed_batch:
+                        completed_batch.append(f)
+
+                for completed_future in completed_batch:
                     candidate = pending_futures.pop(completed_future) # Remove from pending
                     try:
                         loss = completed_future.result()
                         optimizer.tell(candidate, loss)
-                        best_loss_so_far = loss if not best_fitness_history else min(loss, min(best_fitness_history))
-                        best_fitness_history.append(best_loss_so_far)
+                        best_fitness_history.append(loss)
+
+                        # Track overall best
+                        if loss < best_overall_fitness:
+                            best_overall_fitness = loss
+                            print(f"    New overall best fitness found: {best_overall_fitness}", file=sys.stderr)
 
                         if debug:
-                            print(f"Nevergrad: Evaluation {len(best_fitness_history)} (Loss: {loss}, Best so far: {best_loss_so_far})", file=sys.stderr)
+                            print(f"Nevergrad: Evaluation {len(best_fitness_history)} (Loss: {loss}, Best so far: {best_overall_fitness})", file=sys.stderr)
+                        elif len(best_fitness_history) % 50 == 0:
+                            print(f"--- Evaluation {len(best_fitness_history)}/{budget} (Best so far: {best_overall_fitness}) ---", file=sys.stderr)
 
                         if plot_fitness and MATPLOTLIB_AVAILABLE and not interrupted:
                             assert ax is not None
                             assert fig is not None
                             assert plt is not None
                             assert line is not None
-                            line.set_data(range(len(best_fitness_history)), best_fitness_history)
+                            # Update running cumulative best incrementally
+                            cumulative_best.append(best_overall_fitness)
+                            line.set_data(range(len(cumulative_best)), cumulative_best)
                             ax.relim() # Recalculate limits
                             ax.autoscale_view() # Autoscale axes
                             fig.canvas.draw()
@@ -366,5 +384,5 @@ class NevergradOptimizer(BaseOptimizer):
             if forced_path in optimized_config:
                 optimized_config[forced_path]['value'] = forced_value
 
-        print(f"\nNevergrad optimization finished. Best fitness: {recommendation.loss}", file=sys.stderr)
+        print(f"\nNevergrad optimization finished. Best overall fitness: {best_overall_fitness}", file=sys.stderr)
         return optimized_config

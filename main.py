@@ -107,6 +107,12 @@ def main():
         action="store_true",
         help="[Genetic Algorithm & Nevergrad] Visualize the best fitness score over time for each island/evaluation."
     )
+    parser.add_argument(
+        "--polish-passes",
+        type=int,
+        default=3,
+        help="[Genetic Algorithm] Number of coordinate descent polish passes after GA convergence. Set to 0 to disable."
+    )
     # Nevergrad specific arguments
     parser.add_argument(
         "--ng-budget",
@@ -259,7 +265,8 @@ def main():
                 total_population_size=args.population_size,
                 num_islands=args.islands,
                 debug=DEBUG,
-                plot_fitness=args.plot_fitness
+                plot_fitness=args.plot_fitness,
+                polish_passes=args.polish_passes
             )
             optimizer = GeneticAlgorithmOptimizer(opt_config) # Pass config to constructor
             optimized_options_info = optimizer.optimize(
