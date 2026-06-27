@@ -375,6 +375,25 @@ class TestTempDirFeature:
         assert path == "/tmp"  # default tempdir
         assert detected is False
 
+    @patch("main.find_tmpfs_mounts")
+    @patch("main.shutil.disk_usage")
+    @patch("main.os.access")
+    @patch("main.get_repo_disk_usage")
+    def test_get_best_temp_location_skips_non_writable_tmpfs(
+        self, mock_usage, mock_access, mock_disk, mock_mounts
+    ):
+        """Non-writable tmpfs mounts (e.g. /run) are skipped."""
+        from main import get_best_temp_location
+
+        mock_usage.return_value = 10_000_000
+        mock_mounts.return_value = ["/run", "/dev/shm"]
+        mock_access.side_effect = [False, True]  # /run not writable, /dev/shm is
+        mock_disk.return_value.free = 1_000_000_000
+
+        path, detected = get_best_temp_location("/repo", jobs=1, debug=False)
+        assert path == "/dev/shm"
+        assert detected is True
+
     def test_cmd_optimize_uses_explicit_temp_dir(self):
         """When --temp-dir is provided, it is used as the base for temp dirs."""
         import argparse

@@ -136,6 +136,8 @@ def get_best_temp_location(
     # Check all tmpfs mounts — RAM-backed, 10-50x faster than disk /tmp
     for mount in find_tmpfs_mounts():
         try:
+            if not os.access(mount, os.W_OK):
+                continue
             stat = shutil.disk_usage(mount)
             if stat.free > needed_total:
                 if debug:
