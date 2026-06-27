@@ -47,29 +47,30 @@ def build_search_space(
             )
             continue
 
-        # Analysis results override JSON lookup values
+        # Analysis results: detected conventions are mutable (GA optimizes them).
+        # Use the detected value as the seed, but allow mutation to other values.
         if analysis_results and full_path in analysis_results:
             value = analysis_results[full_path]
+            possible_values = list(
+                lookups.json_options_lookup.get(full_path, {}).get(
+                    "possible_values", [value]
+                )
+            )
             parameters[full_path] = ParameterDef(
                 name=full_path,
                 param_type=option_info["type"],
-                possible_values=[value],
+                possible_values=possible_values,
                 fixed=False,
             )
             continue
 
-        # Get possible values from JSON lookup
-        possible_values = []
-        if full_path in lookups.json_options_lookup:
-            possible_values = list(
-                lookups.json_options_lookup[full_path].get("possible_values", [])
-            )
-
+        # Undetected options are invariants — fix at their default values.
+        # The GA should not mutate options the analyzer didn't detect.
         parameters[full_path] = ParameterDef(
             name=full_path,
             param_type=option_info["type"],
-            possible_values=possible_values,
-            fixed=False,
+            possible_values=[],
+            fixed=True,
         )
 
     return SearchSpace(parameters=parameters)

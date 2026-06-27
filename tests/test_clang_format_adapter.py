@@ -33,12 +33,15 @@ def _make_base_options() -> dict[str, Any]:
 
 class TestBuildSearchSpace:
     def test_includes_mutable_options(self):
+        # Detected options are mutable, seeded with detected value.
         lookups = _make_lookups(
             json_options={"IndentWidth": {"possible_values": [2, 4]}}
         )
-        ss = build_search_space(_make_base_options(), lookups)
+        analysis = {"IndentWidth": 4}
+        ss = build_search_space(_make_base_options(), lookups, analysis)
         assert "IndentWidth" in ss.parameters
         assert ss.parameters["IndentWidth"].mutable
+        assert ss.parameters["IndentWidth"].possible_values == [2, 4]
 
     def test_marks_forced_options_as_fixed(self):
         lookups = _make_lookups(forced_options={"UseTab": False})
@@ -58,44 +61,51 @@ class TestBuildSearchSpace:
         assert ss.parameters["UseTab"].param_type == "bool"
         assert ss.parameters["Language"].param_type == "str"
 
-    def test_analysis_results_override_json_lookup(self):
+    def test_analysis_results_seed_detected_options(self):
+        # Detected options get all JSON possible_values for GA to explore.
         lookups = _make_lookups(
             json_options={"IndentWidth": {"possible_values": [2, 4, 8]}}
         )
         analysis = {"IndentWidth": 4}
         ss = build_search_space(_make_base_options(), lookups, analysis)
-        assert ss.parameters["IndentWidth"].possible_values == [4]
+        assert ss.parameters["IndentWidth"].possible_values == [2, 4, 8]
         assert ss.parameters["IndentWidth"].mutable is True
 
-    def test_analysis_results_only_for_matching_keys(self):
+    def test_undetected_options_are_fixed(self):
+        # Options not detected by analyzer are fixed invariants.
         lookups = _make_lookups(
             json_options={"UseTab": {"possible_values": [True, False]}}
         )
         analysis = {"IndentWidth": 2}
         ss = build_search_space(_make_base_options(), lookups, analysis)
-        assert ss.parameters["IndentWidth"].possible_values == [2]
-        assert ss.parameters["UseTab"].possible_values == [True, False]
+        assert ss.parameters["IndentWidth"].mutable is True
+        assert ss.parameters["UseTab"].fixed is True
+        assert ss.parameters["UseTab"].mutable is False
 
-    def test_analysis_results_none_uses_json_lookup(self):
+    def test_no_analysis_all_options_fixed(self):
+        # Without analysis, all options are fixed invariants.
         lookups = _make_lookups(
             json_options={"IndentWidth": {"possible_values": [2, 4]}}
         )
         ss = build_search_space(_make_base_options(), lookups, None)
-        assert ss.parameters["IndentWidth"].possible_values == [2, 4]
+        assert ss.parameters["IndentWidth"].fixed is True
+        assert ss.parameters["IndentWidth"].mutable is False
 
-    def test_analysis_results_not_provided_uses_json_lookup(self):
+    def test_no_analysis_all_options_fixed_default(self):
+        # Without analysis, all options are fixed invariants.
         lookups = _make_lookups(
             json_options={"IndentWidth": {"possible_values": [2, 4]}}
         )
         ss = build_search_space(_make_base_options(), lookups)
-        assert ss.parameters["IndentWidth"].possible_values == [2, 4]
+        assert ss.parameters["IndentWidth"].fixed is True
+        assert ss.parameters["IndentWidth"].mutable is False
 
     def test_analysis_results_with_forced_options(self):
         lookups = _make_lookups(forced_options={"UseTab": True})
         analysis = {"IndentWidth": 4}
         ss = build_search_space(_make_base_options(), lookups, analysis)
         assert ss.parameters["UseTab"].fixed is True
-        assert ss.parameters["IndentWidth"].possible_values == [4]
+        assert ss.parameters["IndentWidth"].mutable is True
 
     def test_analysis_results_unknown_key_ignored(self):
         lookups = _make_lookups()

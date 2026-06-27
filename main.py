@@ -405,6 +405,14 @@ def cmd_optimize(args: argparse.Namespace) -> None:
         # Build search space and fitness function
         search_space = build_search_space(options_info, lookups, analysis_results)
         initial_config = {k: v.get("value") for k, v in options_info.items()}
+
+        # Apply detected conventions as starting values, so the GA begins from
+        # the repo's actual style rather than clang-format defaults.
+        if analysis_results:
+            for key, value in analysis_results.items():
+                if key in initial_config:
+                    initial_config[key] = value
+
         fitness_fn = make_fitness_function(
             repo_path=temp_repo_paths[0],
             process_id=0,
