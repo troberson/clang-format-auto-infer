@@ -187,6 +187,37 @@ python3 main.py <repo_path> [OPTIONS]
 - `--dry-run`: Run convention analysis and print detected conventions as YAML,
   then exit without optimizing.
 
+### Temporary Directory Location (Optional)
+
+When running multiple parallel jobs (`-j` / `--jobs`), each job creates a temporary
+copy of your repository. On Linux systems, the tool automatically discovers any
+RAM-backed tmpfs mounts (such as `/dev/shm`) and uses the first one with enough
+free space — often providing **10-50x faster I/O** for repos containing many small
+files.
+
+This feature is completely transparent:
+
+- **Default behavior unchanged**: If no tmpfs is available, the tool works exactly as before
+- **Auto-detection enabled by default**: When a tmpfs mount has sufficient free space, it's used automatically
+- **Manual override available**: Use `--temp-dir /path/to/folder` to specify any location
+
+**RAM considerations:** Large repositories (>10GB) may exceed tmpfs limits on systems
+with limited RAM. In that case, the tool falls back to the default temp directory
+automatically.
+
+Example debug output showing which backend was chosen:
+```sh
+python3 main.py /path/to/repo --jobs 4 -d
+```
+When a tmpfs mount is selected, you'll see output like:
+```text
+tmpfs available at /dev/shm (8192000000 bytes free)
+```
+Or when falling back:
+```text
+Falling back to default temp dir: /tmp
+```
+
 ### Example Usage (Genetic Algorithm)
 
 To optimize the `clang-format` configuration for a repository located at

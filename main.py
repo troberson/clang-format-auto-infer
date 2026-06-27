@@ -72,6 +72,90 @@ def find_options_without_json_values(
             # If it *is* a boolean and not in JSON/no values, it will be auto-tested, so don't add to missing list
 
 
+def get_repo_disk_usage(repo_path: str) -> int:
+    """Return disk usage of repo in bytes, or 0 on failure.
+
+    Uses ``du -sb`` which is fast even for repos with many files since it only
+    reads directory metadata, not file contents. Note that ``-b`` is a GNU
+    extension; on non-GNU systems this returns 0, which is safe because
+    tmpfs detection is Linux-only anyway.
+    """
+    try:
+        result = run_command(
+            ["du", "-sb", repo_path],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        size_str = result.stdout.split()[0] if result.stdout else "0"
+        return int(size_str)
+    except (subprocess.CalledProcessError, ValueError):
+        return 0
+
+
+def find_tmpfs_mounts() -> list[str]:
+    """Return mount points of all tmpfs filesystems, ordered by mount path.
+
+    Reads ``/proc/mounts`` on Linux; returns an empty list on other platforms
+    or when the file cannot be read.
+    """
+    mounts = []
+    try:
+        with open("/proc/mounts") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) >= 3 and parts[2] == "tmpfs":
+                    mounts.append(parts[1])
+    except OSError:
+        pass
+    return mounts
+
+
+def get_best_temp_location(
+    repo_path: str,
+    jobs: int,
+    debug: bool,
+) -> tuple[str, bool]:
+    """Return a (path, was_auto_detected) pair for temp repo storage.
+
+    Follows the Strangler Fig pattern — new detection code grows alongside the
+    existing ``tempfile.mkdtemp()`` default; the old path is preserved as
+    fallback and is never removed.
+
+    Priority:
+        1. User-specified via ``--temp-dir`` (highest priority, no auto-detect).
+        2. Auto-detect any tmpfs mount with enough free space.
+        3. Fall back to the original behaviour – use ``tempfile.gettempdir()``
+           so users who don't opt in see exactly the same behavior as before
+           this feature was added.
+    """
+    repo_size = get_repo_disk_usage(repo_path)
+    needed_per_job = max(1, jobs)  # at least one copy per job
+    needed_total = repo_size * 2 * needed_per_job
+
+    # Check all tmpfs mounts — RAM-backed, 10-50x faster than disk /tmp
+    for mount in find_tmpfs_mounts():
+        try:
+            stat = shutil.disk_usage(mount)
+            if stat.free > needed_total:
+                if debug:
+                    print(
+                        f"tmpfs available at {mount} ({stat.free} bytes free)",
+                        file=sys.stderr,
+                    )
+                return (mount, True)
+        except (OSError, AttributeError):
+            continue
+
+    # Fallback to original behavior — preserved for backward compatibility
+    if debug:
+        print(
+            f"Falling back to default temp dir: {tempfile.gettempdir()}",
+            file=sys.stderr,
+        )
+    return (tempfile.gettempdir(), False)
+
+
 def cmd_optimize(args: argparse.Namespace) -> None:
     """Execute the optimize subcommand."""
     # Set global debug flag
@@ -247,11 +331,21 @@ def cmd_optimize(args: argparse.Namespace) -> None:
         f"\nPreparing {num_jobs} temporary copies of the repository for parallel processing...",
         file=sys.stderr,
     )
+
+    # Use user-specified temp dir if provided, otherwise auto-detect or fall back
+    base_temp_dir = (
+        args.temp_dir if hasattr(args, "temp_dir") and args.temp_dir else None
+    )
+    if not base_temp_dir:
+        base_temp_dir, _ = get_best_temp_location(repo_path_abs, num_jobs, debug_mode)
+
     try:
         for i in range(num_jobs):
-            # Create a unique temporary directory
-            # Add process_id to prefix for clarity in debug logs
-            temp_dir = tempfile.mkdtemp(prefix=f"clang_opt_repo_{i}_")
+            # Atomic unique directory within the chosen base location
+            temp_dir = tempfile.mkdtemp(
+                prefix=f"clang_opt_repo_{i}_",
+                dir=base_temp_dir,
+            )
             print(f"  Copying '{repo_path_abs}' to '{temp_dir}'...", file=sys.stderr)
             # Copy contents of the original repo to the temporary directory
             # dirs_exist_ok=True is for Python 3.8+
@@ -577,6 +671,14 @@ def main() -> None:
         action="store_true",
         help="Run convention analysis and print detected conventions as YAML, then exit without optimizing.",
     )
+    _ = opt_parser.add_argument(
+        "--temp-dir",
+        default=None,
+        help=(
+            "Use a specific directory for temporary repository copies. When omitted, "
+            "auto-detects fast backends like /dev/shm (tmpfs) if available."
+        ),
+    )
 
     # --- fetch-options subcommand ---
     fetch_parser = subparsers.add_parser(
@@ -609,7 +711,7 @@ def main() -> None:
         cmd_optimize(args)
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover — entry point, tested via imports
     # Note: To run this main script after moving, you should typically run it
     # as a module from the directory *above* src, like:
     # python -m src.main /path/to/repo
