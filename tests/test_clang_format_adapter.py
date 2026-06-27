@@ -58,6 +58,51 @@ class TestBuildSearchSpace:
         assert ss.parameters["UseTab"].param_type == "bool"
         assert ss.parameters["Language"].param_type == "str"
 
+    def test_analysis_results_override_json_lookup(self):
+        lookups = _make_lookups(
+            json_options={"IndentWidth": {"possible_values": [2, 4, 8]}}
+        )
+        analysis = {"IndentWidth": 4}
+        ss = build_search_space(_make_base_options(), lookups, analysis)
+        assert ss.parameters["IndentWidth"].possible_values == [4]
+        assert ss.parameters["IndentWidth"].mutable is True
+
+    def test_analysis_results_only_for_matching_keys(self):
+        lookups = _make_lookups(
+            json_options={"UseTab": {"possible_values": [True, False]}}
+        )
+        analysis = {"IndentWidth": 2}
+        ss = build_search_space(_make_base_options(), lookups, analysis)
+        assert ss.parameters["IndentWidth"].possible_values == [2]
+        assert ss.parameters["UseTab"].possible_values == [True, False]
+
+    def test_analysis_results_none_uses_json_lookup(self):
+        lookups = _make_lookups(
+            json_options={"IndentWidth": {"possible_values": [2, 4]}}
+        )
+        ss = build_search_space(_make_base_options(), lookups, None)
+        assert ss.parameters["IndentWidth"].possible_values == [2, 4]
+
+    def test_analysis_results_not_provided_uses_json_lookup(self):
+        lookups = _make_lookups(
+            json_options={"IndentWidth": {"possible_values": [2, 4]}}
+        )
+        ss = build_search_space(_make_base_options(), lookups)
+        assert ss.parameters["IndentWidth"].possible_values == [2, 4]
+
+    def test_analysis_results_with_forced_options(self):
+        lookups = _make_lookups(forced_options={"UseTab": True})
+        analysis = {"IndentWidth": 4}
+        ss = build_search_space(_make_base_options(), lookups, analysis)
+        assert ss.parameters["UseTab"].fixed is True
+        assert ss.parameters["IndentWidth"].possible_values == [4]
+
+    def test_analysis_results_unknown_key_ignored(self):
+        lookups = _make_lookups()
+        analysis = {"NonExistentOption": "value"}
+        ss = build_search_space(_make_base_options(), lookups, analysis)
+        assert "NonExistentOption" not in ss.parameters
+
 
 class TestConfigToFlatOptions:
     def test_converts_int(self):

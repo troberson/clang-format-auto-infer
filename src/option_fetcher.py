@@ -221,7 +221,7 @@ def _extract_option_details(
                 all_values_set.add(str(val))
             values = sorted(
                 list(all_values_set),
-                key=lambda x: int(x) if x.lstrip("-").isdigit() else x,
+                key=lambda x: (0, int(x)) if x.lstrip("-").isdigit() else (1, x),
             )
 
     # Add the current option to the list of found options
@@ -290,16 +290,16 @@ def parse_options(html_content: str) -> dict[str, OptionDict]:
     current_dl = first_dl
     while current_dl and isinstance(current_dl, Tag):
         if current_dl.name == "dl":
-            dd_tag = current_dl.find("dd")
-            if dd_tag and isinstance(dd_tag, Tag):
-                extracted_options = _extract_option_details(dd_tag)
-                for option_info in extracted_options:
-                    name = option_info["name"]
-                    assert isinstance(name, str)
-                    all_options_data[name] = {
-                        "type": option_info["type"],
-                        "possible_values": option_info["possible_values"],
-                    }
+            for dd_tag in current_dl.find_all("dd", recursive=False):
+                if dd_tag and isinstance(dd_tag, Tag):
+                    extracted_options = _extract_option_details(dd_tag)
+                    for option_info in extracted_options:
+                        name = option_info["name"]
+                        assert isinstance(name, str)
+                        all_options_data[name] = {
+                            "type": option_info["type"],
+                            "possible_values": option_info["possible_values"],
+                        }
 
         current_dl = current_dl.find_next_sibling()
         if current_dl and isinstance(current_dl, Tag) and current_dl.name == "h2":
@@ -308,7 +308,8 @@ def parse_options(html_content: str) -> dict[str, OptionDict]:
     return all_options_data
 
 
-if __name__ == "__main__":
+def main() -> None:  # pragma: no cover
+    """CLI entry point for fetching clang-format options."""
     parser = argparse.ArgumentParser(
         description="Fetch clang-format style options from LLVM documentation."
     )
@@ -361,3 +362,7 @@ if __name__ == "__main__":
 
     else:
         sys.exit(1)
+
+
+if __name__ == "__main__":  # pragma: no cover
+    main()

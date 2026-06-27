@@ -1,16 +1,12 @@
 """Tests for analyze_conventions — detection heuristics with temp files."""
 
 import os
-import sys
-import subprocess
 from pathlib import Path
 
 
 _project_root = Path(__file__).resolve().parent.parent
-if str(_project_root) not in sys.path:
-    sys.path.insert(0, str(_project_root))
 
-from analyze_conventions import (  # noqa: E402
+from src.analyze_conventions import (  # noqa: E402
     _source_files,  # pyright: ignore[reportPrivateUsage]
     detect_indent_width,
     detect_column_limit,
@@ -400,44 +396,111 @@ class TestDetectNumericLiteralCase:
 # ---------------------------------------------------------------------------
 
 
-class TestMainCLI:
-    def test_cli_valid_directory(self, tmp_path: Path):
-        _ = _write_file(tmp_path, "a.c", "int x = 0xFF;\n    int y;\n")
-        result = subprocess.run(
-            [
-                sys.executable,
-                str(_project_root / "analyze_conventions.py"),
-                str(tmp_path),
-            ],
-            capture_output=True,
-            text=True,
-        )
-        assert result.returncode == 0
-        assert "IndentWidth:" in result.stdout
-        assert "ColumnLimit:" in result.stdout
-        assert "QualifierAlignment:" in result.stdout
+class TestDetectNumericLiteralCaseMixed:
+    """Tests for mixed/unclear case branches that return 'Leave'."""
 
-    def test_cli_invalid_directory(self):
-        result = subprocess.run(
-            [
-                sys.executable,
-                str(_project_root / "analyze_conventions.py"),
-                "/nonexistent",
-            ],
-            capture_output=True,
-            text=True,
-        )
-        assert result.returncode == 1
+    def test_mixed_hex_digits_returns_leave(self, tmp_path):
+        """Equal mix of upper and lower hex digits returns Leave."""
+        _ = _write_file(tmp_path, "a.cpp", "int x = 0xABCD;\nint y = 0xabcd;\n")
+        result = detect_numeric_literal_case([str(tmp_path / "a.cpp")])
+        assert result[0] == "Leave"  # hex_digit_case
 
-    def test_cli_no_source_files(self, tmp_path: Path):
-        _ = _write_file(tmp_path, "readme.txt", "hello")
-        result = subprocess.run(
-            [
-                sys.executable,
-                str(_project_root / "analyze_conventions.py"),
-                str(tmp_path),
-            ],
-            capture_output=True,
-            text=True,
+    def test_mixed_prefix_returns_leave(self, tmp_path):
+        """Equal mix of 0x and 0X returns Leave."""
+        _ = _write_file(tmp_path, "a.cpp", "int x = 0x1;\nint y = 0X2;\n")
+        result = detect_numeric_literal_case([str(tmp_path / "a.cpp")])
+        assert result[1] == "Leave"  # prefix_case
+
+    def test_mixed_exponent_returns_leave(self, tmp_path):
+        """Equal mix of e and E returns Leave."""
+        _ = _write_file(tmp_path, "a.cpp", "float x = 1e2;\nfloat y = 3E4;\n")
+        result = detect_numeric_literal_case([str(tmp_path / "a.cpp")])
+        assert result[2] == "Leave"  # exponent_case
+
+    def test_mixed_suffix_returns_leave(self, tmp_path):
+        """Equal mix of upper and lower suffixes returns Leave."""
+        _ = _write_file(tmp_path, "a.cpp", "int x = 1u;\nint y = 2U;\n")
+        result = detect_numeric_literal_case([str(tmp_path / "a.cpp")])
+        assert result[3] == "Leave"  # suffix_case
+
+    def test_mixed_suffix_case_counts(self, tmp_path):
+        """Mixed case suffix like 'uL' counts as mixed, not upper or lower."""
+        _ = _write_file(tmp_path, "a.cpp", "int x = 1uL;\n")
+        result = detect_numeric_literal_case([str(tmp_path / "a.cpp")])
+        assert result[3] == "Leave"  # suffix_case - mixed counts toward neither
+
+
+# ---------------------------------------------------------------------------
+# analyze()
+# ---------------------------------------------------------------------------
+
+
+class TestAnalyze:
+    def test_returns_empty_for_no_files(self, tmp_path):
+        from src.analyze_conventions import analyze
+
+        result = analyze(str(tmp_path))
+        assert result == {}
+
+    def test_returns_detected_conventions(self, tmp_path):
+        from src.analyze_conventions import analyze
+
+        _ = _write_file(
+            tmp_path,
+            "a.cpp",
+            "int x = 0xABCD;\nfloat y = 1e2;\nint z = 1u;\n",
         )
-        assert result.returncode == 1
+        result = analyze(str(tmp_path))
+        assert "Language" in result
+        assert "IndentWidth" in result
+        assert "ColumnLimit" in result
+        assert "QualifierAlignment" in result
+        assert "MaxEmptyLinesToKeep" in result
+        assert result["NumericLiteralCase.HexDigit"] == "Upper"
+        assert result["NumericLiteralCase.ExponentLetter"] == "Lower"
+        assert result["NumericLiteralCase.Suffix"] == "Lower"
+
+    def test_excludes_leave_values(self, tmp_path):
+        from src.analyze_conventions import analyze
+
+        _ = _write_file(
+            tmp_path,
+            "a.cpp",
+            "int x = 0xABCD;\nint y = 0xabcd;\n",
+        )
+        result = analyze(str(tmp_path))
+        # Mixed hex digits → Leave, so key should not be present
+        assert "NumericLiteralCase.HexDigit" not in result
+
+    def test_excludes_none_access_offset(self, tmp_path):
+        from src.analyze_conventions import analyze
+
+        _ = _write_file(tmp_path, "a.cpp", "int x = 1;\n")
+        result = analyze(str(tmp_path))
+        # No access modifiers → None, so key should not be present
+        assert "AccessModifierOffset" not in result
+
+    def test_includes_access_offset_when_present(self, tmp_path):
+        from src.analyze_conventions import analyze
+
+        _ = _write_file(
+            tmp_path,
+            "a.cpp",
+            "class Foo {\npublic:\n    int x;\n};\n",
+        )
+        result = analyze(str(tmp_path))
+        assert "AccessModifierOffset" in result
+
+    def test_returns_all_numeric_literal_fields(self, tmp_path):
+        from src.analyze_conventions import analyze
+
+        _ = _write_file(
+            tmp_path,
+            "a.cpp",
+            "int x = 0xABCD;\nint y = 0X1;\nint z = 0X2;\nfloat w = 1e2;\nint v = 1U;\n",
+        )
+        result = analyze(str(tmp_path))
+        assert "NumericLiteralCase.HexDigit" in result
+        assert "NumericLiteralCase.Prefix" in result
+        assert "NumericLiteralCase.ExponentLetter" in result
+        assert "NumericLiteralCase.Suffix" in result

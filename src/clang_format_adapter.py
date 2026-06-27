@@ -20,12 +20,16 @@ from .repo_formatter import run_clang_format_and_count_changes
 def build_search_space(
     base_options: dict[str, Any],
     lookups: GeneticAlgorithmLookups,
+    analysis_results: dict[str, Any] | None = None,
 ) -> SearchSpace:
     """Build a SearchSpace from clang-format base options and lookups.
 
     Args:
         base_options: Flat options dict from clang-format --dump-config.
         lookups: Contains json_options_lookup and forced_options_lookup.
+        analysis_results: Optional dict from analyze_conventions.analyze().
+            When provided, detected values become the only possible_values
+            for matching parameters, pruning the search space.
 
     Returns:
         SearchSpace with all tunable parameters.
@@ -40,6 +44,17 @@ def build_search_space(
                 param_type=option_info["type"],
                 possible_values=[],
                 fixed=True,
+            )
+            continue
+
+        # Analysis results override JSON lookup values
+        if analysis_results and full_path in analysis_results:
+            value = analysis_results[full_path]
+            parameters[full_path] = ParameterDef(
+                name=full_path,
+                param_type=option_info["type"],
+                possible_values=[value],
+                fixed=False,
             )
             continue
 
