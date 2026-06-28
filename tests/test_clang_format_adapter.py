@@ -5,7 +5,9 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import patch
 
+from src.analyze_conventions import DetectedOption
 from src.clang_format_adapter import (
+    CURATED_PENALTY_VALUES,
     build_search_space,
     config_to_flat_options,
     make_fitness_function,
@@ -113,6 +115,151 @@ class TestBuildSearchSpace:
         ss = build_search_space(_make_base_options(), lookups, analysis)
         assert "NonExistentOption" not in ss.parameters
 
+    def test_detected_option_propagates_tier(self):
+        lookups = _make_lookups(
+            json_options={"IndentWidth": {"possible_values": [2, 4, 8]}}
+        )
+        analysis = {
+            "IndentWidth": DetectedOption(4, "guessed", "resolve"),
+            "UseTab": DetectedOption(False, "detected", "structure"),
+        }
+        ss = build_search_space(_make_base_options(), lookups, analysis)
+        assert ss.parameters["IndentWidth"].tier == "resolve"
+        assert ss.parameters["UseTab"].tier == "structure"
+
+    def test_detected_option_value_used_for_possible_values(self):
+        lookups = _make_lookups(
+            json_options={"IndentWidth": {"possible_values": [2, 4, 8]}}
+        )
+        analysis = {
+            "IndentWidth": DetectedOption(4, "detected", "structure"),
+        }
+        ss = build_search_space(_make_base_options(), lookups, analysis)
+        assert ss.parameters["IndentWidth"].possible_values == [2, 4, 8]
+        assert ss.parameters["IndentWidth"].mutable is True
+
+    def test_raw_value_defaults_tier_to_polish(self):
+        lookups = _make_lookups(
+            json_options={"IndentWidth": {"possible_values": [2, 4]}}
+        )
+        analysis = {"IndentWidth": 4}  # old format, raw value
+        ss = build_search_space(_make_base_options(), lookups, analysis)
+        assert ss.parameters["IndentWidth"].tier == "polish"
+
+    def test_mutable_by_tier_resolve(self):
+        lookups = _make_lookups(
+            json_options={
+                "IndentWidth": {"possible_values": [2, 4, 8]},
+                "UseTab": {"possible_values": [True, False]},
+            }
+        )
+        analysis = {
+            "IndentWidth": DetectedOption(4, "guessed", "resolve"),
+            "UseTab": DetectedOption(False, "detected", "structure"),
+        }
+        ss = build_search_space(_make_base_options(), lookups, analysis)
+        resolve_params = ss.mutable_by_tier("resolve")
+        assert len(resolve_params) == 1
+        assert resolve_params[0].name == "IndentWidth"
+
+    def test_mutable_by_tier_structure(self):
+        lookups = _make_lookups(
+            json_options={
+                "IndentWidth": {"possible_values": [2, 4, 8]},
+                "UseTab": {"possible_values": [True, False]},
+            }
+        )
+        analysis = {
+            "IndentWidth": DetectedOption(4, "guessed", "resolve"),
+            "UseTab": DetectedOption(False, "detected", "structure"),
+        }
+        ss = build_search_space(_make_base_options(), lookups, analysis)
+        structure_params = ss.mutable_by_tier("structure")
+        assert len(structure_params) == 1
+        assert structure_params[0].name == "UseTab"
+
+    def test_penalty_options_get_curated_values(self):
+        base = {
+            "PenaltyExcessCharacter": {"type": "int", "value": 1000},
+            "IndentWidth": {"type": "int", "value": 4},
+        }
+        lookups = _make_lookups()
+        ss = build_search_space(base, lookups)
+        assert ss.parameters["PenaltyExcessCharacter"].mutable is True
+        assert ss.parameters["PenaltyExcessCharacter"].possible_values == list(
+            CURATED_PENALTY_VALUES
+        )
+        assert ss.parameters["PenaltyExcessCharacter"].tier == "polish"
+        # Non-penalty undetected option remains fixed
+        assert ss.parameters["IndentWidth"].fixed is True
+
+    def test_polish_undetect_makes_undetected_options_mutable(self):
+        lookups = _make_lookups(
+            json_options={
+                "UseTab": {"possible_values": [True, False]},
+                "IndentWidth": {"possible_values": [2, 4, 8]},
+            }
+        )
+        ss = build_search_space(_make_base_options(), lookups, polish_undetect=True)
+        assert ss.parameters["UseTab"].mutable is True
+        assert ss.parameters["UseTab"].possible_values == [True, False]
+        assert ss.parameters["IndentWidth"].mutable is True
+        assert ss.parameters["IndentWidth"].possible_values == [2, 4, 8]
+
+    def test_polish_undetect_no_json_values_stays_fixed(self):
+        lookups = _make_lookups(
+            json_options={
+                "UseTab": {"possible_values": [True, False]},
+                "IndentWidth": {"possible_values": None},
+            }
+        )
+        ss = build_search_space(_make_base_options(), lookups, polish_undetect=True)
+        assert ss.parameters["UseTab"].mutable is True
+        assert ss.parameters["IndentWidth"].fixed is True
+
+    def test_polish_undetect_false_keeps_undetected_fixed(self):
+        lookups = _make_lookups(
+            json_options={
+                "UseTab": {"possible_values": [True, False]},
+            }
+        )
+        ss = build_search_space(_make_base_options(), lookups, polish_undetect=False)
+        assert ss.parameters["UseTab"].fixed is True
+
+    def test_penalty_overrides_json_lookup_values(self):
+        base = {
+            "PenaltyExcessCharacter": {"type": "int", "value": 1000},
+        }
+        lookups = _make_lookups(
+            json_options={"PenaltyExcessCharacter": {"possible_values": [100, 200]}}
+        )
+        ss = build_search_space(base, lookups)
+        assert ss.parameters["PenaltyExcessCharacter"].possible_values == list(
+            CURATED_PENALTY_VALUES
+        )
+
+    def test_penalty_option_detection_still_works(self):
+        base = {
+            "PenaltyExcessCharacter": {"type": "int", "value": 1000},
+        }
+        lookups = _make_lookups(
+            json_options={"PenaltyExcessCharacter": {"possible_values": [100, 200]}}
+        )
+        analysis = {"PenaltyExcessCharacter": 500}
+        ss = build_search_space(base, lookups, analysis)
+        # Detected path takes precedence over penalty curated values
+        assert ss.parameters["PenaltyExcessCharacter"].possible_values == [100, 200]
+        assert ss.parameters["PenaltyExcessCharacter"].mutable is True
+
+    def test_forced_option_takes_precedence_over_penalty(self):
+        base = {
+            "PenaltyExcessCharacter": {"type": "int", "value": 1000},
+        }
+        lookups = _make_lookups(forced_options={"PenaltyExcessCharacter": 500})
+        ss = build_search_space(base, lookups)
+        assert ss.parameters["PenaltyExcessCharacter"].fixed is True
+        assert ss.parameters["PenaltyExcessCharacter"].mutable is False
+
 
 class TestConfigToFlatOptions:
     def test_converts_int(self):
@@ -157,7 +304,7 @@ class TestMakeFitnessFunction:
         lookups = _make_lookups()
         base = _make_base_options()
         fitness_fn = make_fitness_function(
-            repo_path="/tmp/repo",
+            repo_paths=["/tmp/repo"],
             process_id=1,
             lookups=lookups,
             base_options=base,
@@ -174,7 +321,7 @@ class TestMakeFitnessFunction:
         lookups = _make_lookups()
         base = _make_base_options()
         fitness_fn = make_fitness_function(
-            repo_path="/tmp/repo",
+            repo_paths=["/tmp/repo"],
             process_id=1,
             lookups=lookups,
             base_options=base,
@@ -191,7 +338,7 @@ class TestMakeFitnessFunction:
         lookups = _make_lookups(forced_options={"UseTab": True})
         base = _make_base_options()
         fitness_fn = make_fitness_function(
-            repo_path="/tmp/repo",
+            repo_paths=["/tmp/repo"],
             process_id=1,
             lookups=lookups,
             base_options=base,
@@ -211,7 +358,7 @@ class TestMakeFitnessFunction:
         lookups = _make_lookups()
         base = _make_base_options()
         fitness_fn = make_fitness_function(
-            repo_path="/tmp/repo",
+            repo_paths=["/tmp/repo"],
             process_id=1,
             lookups=lookups,
             base_options=base,
@@ -230,7 +377,7 @@ class TestMakeFitnessFunction:
         lookups = _make_lookups()
         base = _make_base_options()
         fitness_fn = make_fitness_function(
-            repo_path="/tmp/repo",
+            repo_paths=["/tmp/repo"],
             process_id=1,
             lookups=lookups,
             base_options=base,
@@ -249,7 +396,7 @@ class TestMakeFitnessFunction:
         lookups = _make_lookups()
         base = _make_base_options()
         fitness_fn = make_fitness_function(
-            repo_path="/tmp/repo",
+            repo_paths=["/tmp/repo"],
             process_id=1,
             lookups=lookups,
             base_options=base,

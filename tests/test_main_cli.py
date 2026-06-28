@@ -256,6 +256,70 @@ class TestAnalyzeFlags:
         mock_bss.assert_called_once()
         call_kwargs = mock_bss.call_args
         assert call_kwargs[0][2] == {"IndentWidth": "4"}
+        # Non-phased optimizer should not pass polish_undetect
+        assert call_kwargs[1].get("polish_undetect") is False
+
+    @patch("main.build_search_space")
+    @patch("main.load_forced_options")
+    @patch("main.load_json_option_values")
+    @patch("main.analyze_conventions")
+    def test_phased_optimizer_passes_polish_undetect(
+        self, mock_analyze, mock_load_json, mock_load_forced, mock_bss
+    ):
+        import argparse
+
+        from src.analyze_conventions import DetectedOption
+
+        mock_analyze.return_value = {
+            "IndentWidth": DetectedOption(4, "detected", "polish")
+        }
+        mock_load_json.return_value = {}
+        mock_load_forced.return_value = {}
+        from main import cmd_optimize
+
+        args = argparse.Namespace(
+            repo_path="/tmp",
+            debug=False,
+            start_config_file=None,
+            dry_run=False,
+            no_analyze=False,
+            option_values_json_file=None,
+            forced_options_yaml_file=None,
+            output_file=None,
+            optimizer="phased",
+            islands=1,
+            population_size=4,
+            iterations=1,
+            migration_interval=15,
+            polish_passes=0,
+            file_sample_percentage=100.0,
+            jobs=1,
+            ng_budget=20,
+            ng_optimizer="TwoPointsDE",
+            max_restarts=1,
+            impact_budget=10,
+        )
+        with patch("main.os.path.isdir", return_value=True):
+            with patch("main.run_phased_optimization") as mock_phased:
+                from unittest.mock import MagicMock
+
+                mock_result = MagicMock()
+                mock_result.best_config = {}
+                mock_phased.return_value = mock_result
+                with patch("main.tempfile.mkdtemp", return_value="/tmp/test"):
+                    with patch("main.shutil.copytree"):
+                        with patch("main.run_command"):
+                            with patch(
+                                "main.generate_clang_format_config",
+                                return_value="",
+                            ):
+                                with patch("main.shutil.rmtree"):
+                                    cmd_optimize(args)
+
+        # Verify polish_undetect=True for phased optimizer
+        mock_bss.assert_called_once()
+        call_kwargs = mock_bss.call_args
+        assert call_kwargs[1].get("polish_undetect") is True
 
 
 class TestTempDirFeature:
@@ -948,6 +1012,51 @@ class TestCmdOptimizeErrorPaths:
                                                 cmd_optimize(args)
                                                 mock_ng.assert_called_once()
 
+    def test_phased_optimizer_runs(self):
+        import argparse
+
+        from main import cmd_optimize
+
+        args = argparse.Namespace(
+            repo_path="/tmp",
+            debug=False,
+            start_config_file=None,
+            dry_run=False,
+            no_analyze=True,
+            option_values_json_file=None,
+            forced_options_yaml_file=None,
+            output_file=None,
+            optimizer="phased",
+            ng_budget=10,
+            islands=1,
+            population_size=4,
+            max_restarts=1,
+            file_sample_percentage=100.0,
+            jobs=1,
+        )
+        with patch("main.os.path.isdir", return_value=True):
+            with patch("main.get_clang_format_options", return_value="output"):
+                with patch(
+                    "main.parse_clang_format_options", return_value=mock_options_info()
+                ):
+                    with patch("main.build_search_space", return_value=[]):
+                        with patch("main.run_phased_optimization") as mock_phased:
+                            from unittest.mock import MagicMock
+
+                            mock_result = MagicMock()
+                            mock_result.best_config = {}
+                            mock_phased.return_value = mock_result
+                            with patch("main.tempfile.mkdtemp"):
+                                with patch("main.shutil.copytree"):
+                                    with patch("main.run_command"):
+                                        with patch(
+                                            "main.generate_clang_format_config",
+                                            return_value="",
+                                        ):
+                                            with patch("main.shutil.rmtree"):
+                                                cmd_optimize(args)
+                                                mock_phased.assert_called_once()
+
     def test_unknown_optimizer_exits(self):
         import argparse
 
@@ -1130,6 +1239,190 @@ class TestCmdOptimizeErrorPaths:
         assert "Error removing temporary directory" in captured.err
 
 
+class TestPhasedPipelineWiring:
+    """Test that analyze_with_metadata and measure_impact are wired into main.py."""
+
+    def test_dry_run_prints_detected_option_metadata(self, capsys):
+        """Dry-run with DetectedOption objects prints confidence and tier."""
+        import argparse
+
+        from main import cmd_optimize
+        from src.analyze_conventions import DetectedOption
+
+        args = argparse.Namespace(
+            repo_path="/tmp",
+            debug=False,
+            start_config_file=None,
+            dry_run=True,
+            no_analyze=False,
+        )
+        with patch("main.os.path.isdir", return_value=True):
+            with patch(
+                "main.analyze_conventions",
+                return_value={
+                    "IndentWidth": DetectedOption(4, "detected", "structure")
+                },
+            ):
+                cmd_optimize(args)
+
+        captured = capsys.readouterr()
+        assert "IndentWidth: 4" in captured.out
+        assert "detected" in captured.out
+        assert "structure" in captured.out
+
+    def test_impact_measurement_runs_for_phased_optimizer(self, capsys):
+        """measure_impact is called when --optimizer phased and analysis_results exist."""
+        import argparse
+
+        from main import cmd_optimize
+        from src.analyze_conventions import DetectedOption
+
+        args = argparse.Namespace(
+            repo_path="/tmp",
+            debug=False,
+            start_config_file=None,
+            dry_run=False,
+            no_analyze=False,
+            option_values_json_file=None,
+            forced_options_yaml_file=None,
+            output_file=None,
+            optimizer="phased",
+            ng_budget=10,
+            islands=1,
+            population_size=4,
+            max_restarts=1,
+            impact_budget=50,
+            file_sample_percentage=100.0,
+            jobs=1,
+        )
+        with patch("main.os.path.isdir", return_value=True):
+            with patch("main.get_clang_format_options", return_value="output"):
+                with patch(
+                    "main.parse_clang_format_options", return_value=mock_options_info()
+                ):
+                    with patch("main.load_json_option_values", return_value={}):
+                        with patch("main.load_forced_options", return_value={}):
+                            with patch("main.find_options_without_json_values"):
+                                with patch(
+                                    "main.analyze_conventions",
+                                    return_value={
+                                        "IndentWidth": DetectedOption(
+                                            4, "detected", "polish"
+                                        )
+                                    },
+                                ):
+                                    with patch("main.measure_impact") as mock_impact:
+                                        mock_impact.return_value = {
+                                            "IndentWidth": "structure"
+                                        }
+                                        with patch(
+                                            "main.build_search_space", return_value=[]
+                                        ):
+                                            with patch(
+                                                "main.run_phased_optimization"
+                                            ) as mock_phased:
+                                                from unittest.mock import MagicMock
+
+                                                mock_result = MagicMock()
+                                                mock_result.best_config = {}
+                                                mock_phased.return_value = mock_result
+                                                with patch(
+                                                    "main.tempfile.mkdtemp",
+                                                    return_value="/tmp/test",
+                                                ):
+                                                    with patch("main.shutil.copytree"):
+                                                        with patch("main.run_command"):
+                                                            with patch(
+                                                                "main.generate_clang_format_config",
+                                                                return_value="",
+                                                            ):
+                                                                with patch(
+                                                                    "main.shutil.rmtree"
+                                                                ):
+                                                                    cmd_optimize(args)
+                                                                    mock_impact.assert_called_once()
+                                                                    # Verify tier was overridden
+                                                                    call_kwargs = mock_impact.call_args
+                                                                    assert (
+                                                                        call_kwargs.kwargs[
+                                                                            "budget"
+                                                                        ]
+                                                                        == 50
+                                                                    )
+
+        captured = capsys.readouterr()
+        assert "Impact tiers" in captured.err
+
+    def test_impact_measurement_skipped_for_non_phased(self):
+        """measure_impact is NOT called for genetic optimizer."""
+        import argparse
+
+        from main import cmd_optimize
+        from src.analyze_conventions import DetectedOption
+
+        args = argparse.Namespace(
+            repo_path="/tmp",
+            debug=False,
+            start_config_file=None,
+            dry_run=False,
+            no_analyze=False,
+            option_values_json_file=None,
+            forced_options_yaml_file=None,
+            output_file=None,
+            optimizer="genetic",
+            islands=1,
+            population_size=4,
+            iterations=1,
+            migration_interval=15,
+            polish_passes=0,
+            file_sample_percentage=100.0,
+            jobs=1,
+        )
+        with patch("main.os.path.isdir", return_value=True):
+            with patch("main.get_clang_format_options", return_value="output"):
+                with patch(
+                    "main.parse_clang_format_options", return_value=mock_options_info()
+                ):
+                    with patch("main.load_json_option_values", return_value={}):
+                        with patch("main.load_forced_options", return_value={}):
+                            with patch("main.find_options_without_json_values"):
+                                with patch(
+                                    "main.analyze_conventions",
+                                    return_value={
+                                        "IndentWidth": DetectedOption(
+                                            4, "detected", "polish"
+                                        )
+                                    },
+                                ):
+                                    with patch("main.measure_impact") as mock_impact:
+                                        with patch(
+                                            "main.build_search_space", return_value=[]
+                                        ):
+                                            with patch("main.run_island_ga") as mock_ga:
+                                                from src.optimization_engine.types import (
+                                                    Individual,
+                                                )
+
+                                                mock_ga.return_value = Individual(
+                                                    config={}, fitness=0
+                                                )
+                                                with patch(
+                                                    "main.tempfile.mkdtemp",
+                                                    return_value="/tmp/test",
+                                                ):
+                                                    with patch("main.shutil.copytree"):
+                                                        with patch("main.run_command"):
+                                                            with patch(
+                                                                "main.generate_clang_format_config",
+                                                                return_value="",
+                                                            ):
+                                                                with patch(
+                                                                    "main.shutil.rmtree"
+                                                                ):
+                                                                    cmd_optimize(args)
+                                                                    mock_impact.assert_not_called()
+
+
 class TestFetchOptionsEmptyResult:
     """Test fetch-options subcommand when no options are found."""
 
@@ -1172,3 +1465,92 @@ def mock_open_data(data=None):
 def mock_options_info():
     """Return a minimal OptionInfo dict that parse_clang_format_options would produce."""
     return {"IndentWidth": {"type": "int", "value": 4}}
+
+
+class TestWarnUnusedPhasedFlags:
+    """Test _warn_unused_phased_flags warns and overrides GA/nevergrad flags."""
+
+    def test_warns_about_unused_flags(self, capsys):
+        from main import _warn_unused_phased_flags  # pyright: ignore[reportPrivateUsage]
+
+        import argparse
+
+        args = argparse.Namespace(
+            optimizer="phased",
+            iterations=200,
+            population_size=8,
+            islands=3,
+            polish_passes=5,
+            migration_interval=10,
+            checkpoint_interval=50,
+            checkpoint_resume="/tmp/ckpt",
+            ng_optimizer="CMA",
+        )
+        _warn_unused_phased_flags(args)
+        captured = capsys.readouterr()
+        assert "ignores" in captured.err
+        assert "--iterations" in captured.err
+        assert "--ng-optimizer" in captured.err
+
+    def test_overrides_flags_with_defaults(self):
+        from main import _warn_unused_phased_flags  # pyright: ignore[reportPrivateUsage]
+
+        import argparse
+
+        args = argparse.Namespace(
+            optimizer="phased",
+            iterations=200,
+            population_size=8,
+            islands=3,
+            polish_passes=5,
+            migration_interval=10,
+            checkpoint_interval=50,
+            checkpoint_resume="/tmp/ckpt",
+            ng_optimizer="CMA",
+        )
+        _warn_unused_phased_flags(args)
+        assert args.iterations == 100
+        assert args.population_size == 4
+        assert args.islands == 1
+        assert args.polish_passes == 0
+        assert args.migration_interval == 15
+        assert args.checkpoint_interval == 0
+        assert args.checkpoint_resume is None
+        assert args.ng_optimizer == "TwoPointsDE"
+
+    def test_no_warning_when_no_unused_flags(self, capsys):
+        from main import _warn_unused_phased_flags  # pyright: ignore[reportPrivateUsage]
+
+        import argparse
+
+        args = argparse.Namespace(optimizer="phased")
+        _warn_unused_phased_flags(args)
+        captured = capsys.readouterr()
+        assert "ignores" not in captured.err
+
+    def test_main_path_calls_warn_for_phased(self, capsys, monkeypatch):
+        """Ensure main() invokes _warn_unused_phased_flags when --optimizer phased."""
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "main.py",
+                "optimize",
+                "--optimizer",
+                "phased",
+                "--iterations",
+                "200",
+                "/tmp/fake",
+            ],
+        )
+        from main import main
+
+        with patch("main.cmd_optimize") as mock_optimize:
+            mock_optimize.side_effect = SystemExit(0)
+            try:
+                main()
+            except SystemExit:
+                pass
+        captured = capsys.readouterr()
+        assert "ignores" in captured.err
+        assert "--iterations" in captured.err

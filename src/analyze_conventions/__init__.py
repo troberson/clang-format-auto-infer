@@ -30,11 +30,14 @@ from .style import (
     detect_align_case_labels,
     detect_trailing_comment_style,
 )
-from .analyzer import analyze
+from .analyzer import DetectedOption, analyze, analyze_with_metadata
+from .impact import measure_impact
 
 __all__ = [
     "_source_files",
     "analyze",
+    "analyze_with_metadata",
+    "DetectedOption",
     "detect_access_modifier_offset",
     "detect_allow_short_blocks",
     "detect_allow_short_functions",
@@ -54,4 +57,5 @@ __all__ = [
     "detect_sort_includes",
     "detect_trailing_comment_style",
     "detect_use_tab",
+    "measure_impact",
 ]

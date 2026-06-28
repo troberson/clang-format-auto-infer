@@ -15,12 +15,17 @@ class ParameterDef:
         param_type: Type hint (e.g. 'int', 'bool', 'str').
         possible_values: Allowed values. Empty means the parameter is fixed.
         fixed: If True, this parameter must not be mutated during optimization.
+        tier: Optimization phase this parameter belongs to.
+            - 'resolve': Guessed values needing empirical disambiguation.
+            - 'structure': High-impact structural options.
+            - 'polish': Lower-impact options for final tuning.
     """
 
     name: str
     param_type: str
     possible_values: list[Any] = field(default_factory=list)
     fixed: bool = False
+    tier: str = "polish"
 
     @property
     def mutable(self) -> bool:
@@ -47,6 +52,10 @@ class SearchSpace:
     def mutable_names(self) -> list[str]:
         """Return names of mutable parameters."""
         return [p.name for p in self.mutable_parameters]
+
+    def mutable_by_tier(self, tier: str) -> list[ParameterDef]:
+        """Return mutable parameters belonging to the given tier."""
+        return [p for p in self.mutable_parameters if p.tier == tier]
 
 
 @dataclass

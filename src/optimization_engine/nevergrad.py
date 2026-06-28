@@ -58,6 +58,32 @@ def _convert_param_types(
     return result
 
 
+class _ObjectiveWrapper:
+    """Picklable wrapper that converts nevergrad params to a config dict.
+
+    Must be a module-level class so ProcessPoolExecutor can pickle it.
+    """
+
+    _objective: Callable[[dict[str, Any]], float]
+    _search_space: SearchSpace
+    _initial_config: dict[str, Any] | None
+
+    def __init__(
+        self,
+        objective: Callable[[dict[str, Any]], float],
+        search_space: SearchSpace,
+        initial_config: dict[str, Any] | None,
+    ) -> None:
+        self._objective = objective
+        self._search_space = search_space
+        self._initial_config = initial_config
+
+    def __call__(self, **ng_params: Any) -> float:
+        config = dict(self._initial_config) if self._initial_config else {}
+        config.update(_convert_param_types(ng_params, self._search_space))
+        return self._objective(config)
+
+
 def run_nevergrad_optimization(
     search_space: SearchSpace,
     objective: Callable[[dict[str, Any]], float],
@@ -66,6 +92,7 @@ def run_nevergrad_optimization(
     optimizer_name: str = "TwoPointsDE",
     debug: bool = False,
     initial_config: dict[str, Any] | None = None,
+    convergence_threshold: int | None = None,
 ) -> OptimizationResult:
     """Run a generic Nevergrad optimization loop.
 
@@ -77,6 +104,8 @@ def run_nevergrad_optimization(
         optimizer_name: Nevergrad optimizer to use.
         debug: If True, print detailed progress.
         initial_config: Base config to merge with optimized values.
+        convergence_threshold: If set, stop early when no improvement occurs
+            for this many consecutive evaluations. None means run full budget.
 
     Returns:
         OptimizationResult with best config and fitness.
@@ -117,23 +146,22 @@ def run_nevergrad_optimization(
     best_fitness_history: list[float] = []
     current_eval_count = 0
     interrupted = False
+    # Convergence tracking
+    no_improve_count = 0
 
     pending_futures: dict[concurrent.futures.Future[float], ng.p.Parameter] = {}
 
-    def _wrap_objective(**ng_params: Any) -> float:
-        """Wrap the objective to convert nevergrad params to config dict."""
-        config = dict(initial_config) if initial_config else {}
-        config.update(_convert_param_types(ng_params, search_space))
-        return objective(config)
+    # Use a module-level callable so ThreadPoolExecutor can invoke it.
+    wrapper = _ObjectiveWrapper(objective, search_space, initial_config)
 
-    executor: concurrent.futures.ProcessPoolExecutor | None = None
+    executor: concurrent.futures.ThreadPoolExecutor | None = None
 
     def _submit_next_evaluation() -> bool:
         nonlocal current_eval_count
         if current_eval_count < budget:
             assert executor is not None
             candidate = optimizer.ask()
-            future = executor.submit(_wrap_objective, **candidate.kwargs)
+            future = executor.submit(wrapper, **candidate.kwargs)
             pending_futures[future] = candidate
             current_eval_count += 1
             if debug:
@@ -150,9 +178,9 @@ def run_nevergrad_optimization(
                 break
 
     try:
-        executor = concurrent.futures.ProcessPoolExecutor(max_workers=num_workers)
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=num_workers)
         print(
-            f"Nevergrad: Using ProcessPoolExecutor with {num_workers} workers.",
+            f"Nevergrad: Using ThreadPoolExecutor with {num_workers} workers.",
             file=sys.stderr,
         )
 
@@ -178,10 +206,24 @@ def run_nevergrad_optimization(
 
                     if loss < best_overall_fitness:
                         best_overall_fitness = loss
+                        no_improve_count = 0
                         print(
                             f"    New overall best fitness: {best_overall_fitness}",
                             file=sys.stderr,
                         )
+                    else:
+                        no_improve_count += 1
+
+                    # Check convergence
+                    if (
+                        convergence_threshold is not None
+                        and no_improve_count >= convergence_threshold
+                    ):
+                        print(
+                            f"Nevergrad: Converged after {len(best_fitness_history)} evaluations (no improvement for {convergence_threshold} consecutive evaluations).",
+                            file=sys.stderr,
+                        )
+                        interrupted = True
 
                     if debug:
                         print(
@@ -229,11 +271,11 @@ def run_nevergrad_optimization(
         recommendation = optimizer.provide_recommendation()
     finally:
         if executor:
-            print("Shutting down ProcessPoolExecutor...", file=sys.stderr)
+            print("Shutting down ThreadPoolExecutor...", file=sys.stderr)
             for future in pending_futures.keys():  # pragma: no cover
                 _ = future.cancel()
             executor.shutdown(wait=True)
-            print("ProcessPoolExecutor shut down.", file=sys.stderr)
+            print("ThreadPoolExecutor shut down.", file=sys.stderr)
 
     # Build result
     if recommendation is None:  # pyright: ignore[reportUnnecessaryComparison]

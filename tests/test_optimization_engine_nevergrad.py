@@ -181,7 +181,7 @@ class TestRunNevergradOptimization:
         assert result.best_fitness == float("inf")
 
     @patch("src.optimization_engine.nevergrad.ng.optimizers.registry")
-    @patch("src.optimization_engine.nevergrad.concurrent.futures.ProcessPoolExecutor")
+    @patch("src.optimization_engine.nevergrad.concurrent.futures.ThreadPoolExecutor")
     @patch("src.optimization_engine.nevergrad.concurrent.futures.wait")
     def test_runs_and_returns_result(self, mock_wait, mock_pool_cls, mock_registry):
         mock_optimizer = self._build_mock_optimizer()
@@ -228,7 +228,7 @@ class TestRunNevergradOptimization:
         assert "not found" in captured.err
 
     @patch("src.optimization_engine.nevergrad.ng.optimizers.registry")
-    @patch("src.optimization_engine.nevergrad.concurrent.futures.ProcessPoolExecutor")
+    @patch("src.optimization_engine.nevergrad.concurrent.futures.ThreadPoolExecutor")
     @patch("src.optimization_engine.nevergrad.concurrent.futures.wait")
     def test_executor_shutdown_called(self, mock_wait, mock_pool_cls, mock_registry):
         mock_optimizer = self._build_mock_optimizer()
@@ -254,7 +254,7 @@ class TestRunNevergradOptimization:
         mock_executor.shutdown.assert_called()
 
     @patch("src.optimization_engine.nevergrad.ng.optimizers.registry")
-    @patch("src.optimization_engine.nevergrad.concurrent.futures.ProcessPoolExecutor")
+    @patch("src.optimization_engine.nevergrad.concurrent.futures.ThreadPoolExecutor")
     @patch("src.optimization_engine.nevergrad.concurrent.futures.wait")
     def test_debug_prints_progress(
         self, mock_wait, mock_pool_cls, mock_registry, capsys
@@ -284,7 +284,7 @@ class TestRunNevergradOptimization:
         assert "Submitted task" in captured.err
 
     @patch("src.optimization_engine.nevergrad.ng.optimizers.registry")
-    @patch("src.optimization_engine.nevergrad.concurrent.futures.ProcessPoolExecutor")
+    @patch("src.optimization_engine.nevergrad.concurrent.futures.ThreadPoolExecutor")
     @patch("src.optimization_engine.nevergrad.concurrent.futures.wait")
     def test_none_recommendation_returns_initial(
         self, mock_wait, mock_pool_cls, mock_registry, capsys
@@ -316,7 +316,7 @@ class TestRunNevergradOptimization:
         assert "No recommendation" in captured.err
 
     @patch("src.optimization_engine.nevergrad.ng.optimizers.registry")
-    @patch("src.optimization_engine.nevergrad.concurrent.futures.ProcessPoolExecutor")
+    @patch("src.optimization_engine.nevergrad.concurrent.futures.ThreadPoolExecutor")
     @patch("src.optimization_engine.nevergrad.concurrent.futures.wait")
     def test_evaluation_error_told_as_inf(
         self, mock_wait, mock_pool_cls, mock_registry
@@ -350,7 +350,7 @@ class TestRunNevergradOptimization:
         assert call_args[0][1] == float("inf")
 
     @patch("src.optimization_engine.nevergrad.ng.optimizers.registry")
-    @patch("src.optimization_engine.nevergrad.concurrent.futures.ProcessPoolExecutor")
+    @patch("src.optimization_engine.nevergrad.concurrent.futures.ThreadPoolExecutor")
     @patch("src.optimization_engine.nevergrad.concurrent.futures.wait")
     def test_progress_print_every_50_evaluations(
         self, mock_wait, mock_pool_cls, mock_registry, capsys
@@ -381,3 +381,128 @@ class TestRunNevergradOptimization:
         )
         captured = capsys.readouterr()
         assert "--- Evaluation 50/50" in captured.err
+
+
+class TestConvergenceDetection:
+    """Test convergence_threshold parameter in run_nevergrad_optimization."""
+
+    def _build_mock_optimizer(self):
+        """Build a mock nevergrad optimizer for testing."""
+        mock_optimizer = MagicMock()
+        mock_param = MagicMock()
+        mock_param.kwargs = {"a": 1}
+        mock_optimizer.ask.return_value = mock_param
+
+        mock_rec = MagicMock()
+        mock_rec.kwargs = {"a": 1}
+        mock_optimizer.provide_recommendation.return_value = mock_rec
+        return mock_optimizer
+
+    def _build_mock_executor_and_future(self, losses: list[float]):
+        """Build a mock executor that returns a sequence of losses."""
+        future = MagicMock()
+        future.done.return_value = True
+        future.cancel.return_value = True
+
+        mock_executor = MagicMock()
+        loss_iter = iter(losses)
+
+        def submit_func(_func, **_kwargs):
+            loss = next(loss_iter)
+            future.result.return_value = loss
+            return future
+
+        mock_executor.submit = submit_func
+        return mock_executor, future
+
+    @patch("src.optimization_engine.nevergrad.ng.optimizers.registry")
+    @patch("src.optimization_engine.nevergrad.concurrent.futures.ThreadPoolExecutor")
+    @patch("src.optimization_engine.nevergrad.concurrent.futures.wait")
+    def test_converges_early_when_no_improvement(
+        self, mock_wait, mock_pool_cls, mock_registry, capsys
+    ):
+        """Stops early when convergence_threshold is reached."""
+        mock_optimizer = self._build_mock_optimizer()
+        mock_registry.__getitem__.return_value = MagicMock(return_value=mock_optimizer)
+
+        # All evaluations return the same loss — no improvement.
+        mock_executor, mock_future = self._build_mock_executor_and_future([5.0] * 100)
+        mock_pool_cls.return_value = mock_executor
+        mock_wait.side_effect = lambda futures, return_when: ([mock_future], [])
+
+        ss = SearchSpace(
+            parameters={
+                "a": ParameterDef(name="a", param_type="int", possible_values=[1, 2]),
+            }
+        )
+        _ = run_nevergrad_optimization(
+            search_space=ss,
+            objective=_simple_objective,
+            budget=100,
+            num_workers=1,
+            convergence_threshold=5,
+        )
+        captured = capsys.readouterr()
+        assert "Converged after" in captured.err
+        # Should have stopped after ~5 evaluations, not 100
+        assert mock_optimizer.ask.call_count <= 6
+
+    @patch("src.optimization_engine.nevergrad.ng.optimizers.registry")
+    @patch("src.optimization_engine.nevergrad.concurrent.futures.ThreadPoolExecutor")
+    @patch("src.optimization_engine.nevergrad.concurrent.futures.wait")
+    def test_no_convergence_threshold_runs_full_budget(
+        self, mock_wait, mock_pool_cls, mock_registry
+    ):
+        """Without convergence_threshold, runs full budget."""
+        mock_optimizer = self._build_mock_optimizer()
+        mock_registry.__getitem__.return_value = MagicMock(return_value=mock_optimizer)
+
+        mock_executor, mock_future = self._build_mock_executor_and_future([5.0] * 10)
+        mock_pool_cls.return_value = mock_executor
+        mock_wait.side_effect = lambda futures, return_when: ([mock_future], [])
+
+        ss = SearchSpace(
+            parameters={
+                "a": ParameterDef(name="a", param_type="int", possible_values=[1, 2]),
+            }
+        )
+        _ = run_nevergrad_optimization(
+            search_space=ss,
+            objective=_simple_objective,
+            budget=10,
+            num_workers=1,
+            convergence_threshold=None,
+        )
+        # Should have asked for all 10 evaluations
+        assert mock_optimizer.ask.call_count == 10
+
+    @patch("src.optimization_engine.nevergrad.ng.optimizers.registry")
+    @patch("src.optimization_engine.nevergrad.concurrent.futures.ThreadPoolExecutor")
+    @patch("src.optimization_engine.nevergrad.concurrent.futures.wait")
+    def test_convergence_resets_on_improvement(
+        self, mock_wait, mock_pool_cls, mock_registry
+    ):
+        """Counter resets when a better fitness is found."""
+        mock_optimizer = self._build_mock_optimizer()
+        mock_registry.__getitem__.return_value = MagicMock(return_value=mock_optimizer)
+
+        # Losses improve periodically, so convergence never triggers.
+        losses = [10.0, 9.0, 8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0]
+        mock_executor, mock_future = self._build_mock_executor_and_future(losses)
+        mock_pool_cls.return_value = mock_executor
+        mock_wait.side_effect = lambda futures, return_when: ([mock_future], [])
+
+        ss = SearchSpace(
+            parameters={
+                "a": ParameterDef(name="a", param_type="int", possible_values=[1, 2]),
+            }
+        )
+        _ = run_nevergrad_optimization(
+            search_space=ss,
+            objective=_simple_objective,
+            budget=10,
+            num_workers=1,
+            convergence_threshold=3,
+        )
+        # Should have run all 10 because each evaluation improved
+        assert mock_optimizer.ask.call_count == 10

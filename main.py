@@ -20,14 +20,22 @@ from src.optimization_engine import (
     polish_coordinate_descent,
     run_island_ga,
     run_nevergrad_optimization,
+    run_phased_optimization,
 )
 from src.clang_format_adapter import (
     build_search_space,
     config_to_flat_options,
     make_fitness_function,
 )
-from src.analyze_conventions import analyze as analyze_conventions
+from src.analyze_conventions import (
+    analyze_with_metadata,
+    measure_impact,
+)
 from src.utils import run_command
+
+# Backward-compatible alias for existing test mocks.
+# New code uses analyze_with_metadata directly.
+analyze_conventions = analyze_with_metadata
 
 # Global debug flag (will be set from args)
 debug_mode = False
@@ -272,7 +280,11 @@ def cmd_optimize(args: argparse.Namespace) -> None:
     # --dry-run: print detected conventions and exit
     if args.dry_run:
         if analysis_results:
-            print(yaml.dump(analysis_results, default_flow_style=False))
+            for name, raw in sorted(analysis_results.items()):
+                if hasattr(raw, "value"):
+                    print(f"{name}: {raw.value}  # {raw.confidence} / {raw.tier}")
+                else:
+                    print(f"{name}: {raw}")
         else:
             print("# No conventions detected.", file=sys.stderr)
         return
@@ -394,6 +406,43 @@ def cmd_optimize(args: argparse.Namespace) -> None:
             temp_repo_paths.append(temp_dir)
         print("Temporary repositories prepared.", file=sys.stderr)
 
+        # Empirical impact measurement for phased optimizer.
+        # Determines which detected options are high-impact (structure) vs
+        # low-impact (polish) by running a lightweight nevergrad optimization.
+        if args.optimizer == "phased" and analysis_results:
+            print(
+                "\nMeasuring empirical impact of detected options...",
+                file=sys.stderr,
+            )
+            impact_tiers = measure_impact(
+                repo_path=temp_repo_paths[0],
+                analysis_results=analysis_results,
+                base_options=options_info,
+                lookups=lookups,
+                budget=args.impact_budget,
+                process_id=0,
+                debug=debug_mode,
+                file_sample_percentage=args.file_sample_percentage,
+                random_seed=RANDOM_SEED,
+            )
+            # Override tiers with empirical results
+            for name, tier in impact_tiers.items():
+                if name in analysis_results:
+                    analysis_results[name].tier = tier
+            structure_count = sum(
+                1 for v in analysis_results.values() if v.tier == "structure"
+            )
+            resolve_count = sum(
+                1 for v in analysis_results.values() if v.tier == "resolve"
+            )
+            polish_count = sum(
+                1 for v in analysis_results.values() if v.tier == "polish"
+            )
+            print(
+                f"  Impact tiers: resolve={resolve_count}, structure={structure_count}, polish={polish_count}",
+                file=sys.stderr,
+            )
+
         # No need for multiprocessing.Manager or shared counter for Nevergrad anymore
         # as the executor handles process management and repo path assignment is now
         # based on the worker's process ID directly.
@@ -402,19 +451,25 @@ def cmd_optimize(args: argparse.Namespace) -> None:
 
         optimized_options_info = None
 
-        # Build search space and fitness function
-        search_space = build_search_space(options_info, lookups, analysis_results)
+        # Build search space and fitness function.
+        # Phased optimizer unlocks undetected options for the polish phase.
+        search_space = build_search_space(
+            options_info,
+            lookups,
+            analysis_results,
+            polish_undetect=args.optimizer == "phased",
+        )
         initial_config = {k: v.get("value") for k, v in options_info.items()}
 
-        # Apply detected conventions as starting values, so the GA begins from
+        # Apply detected conventions as starting values, so the optimizer begins from
         # the repo's actual style rather than clang-format defaults.
         if analysis_results:
-            for key, value in analysis_results.items():
+            for key, raw in analysis_results.items():
                 if key in initial_config:
-                    initial_config[key] = value
+                    initial_config[key] = raw.value if hasattr(raw, "value") else raw
 
         fitness_fn = make_fitness_function(
-            repo_path=temp_repo_paths[0],
+            repo_paths=temp_repo_paths,
             process_id=0,
             lookups=lookups,
             base_options=options_info,
@@ -456,6 +511,21 @@ def cmd_optimize(args: argparse.Namespace) -> None:
                 optimizer_name=args.ng_optimizer,
                 debug=debug_mode,
                 initial_config=initial_config,
+            )
+            optimized_options_info = config_to_flat_options(
+                result.best_config, options_info
+            )
+        elif args.optimizer == "phased":
+            result = run_phased_optimization(
+                search_space=search_space,
+                fitness_fn=fitness_fn,
+                initial_config=initial_config,
+                total_budget=args.ng_budget,
+                num_islands=args.islands,
+                population_size=args.population_size,
+                num_workers=num_jobs,
+                max_restarts=args.max_restarts,
+                debug=debug_mode,
             )
             optimized_options_info = config_to_flat_options(
                 result.best_config, options_info
@@ -551,6 +621,52 @@ def cmd_fetch_options(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def _warn_unused_phased_flags(args: argparse.Namespace) -> None:
+    """Warn about and override GA/nevergrad-specific flags for phased optimizer.
+
+    When --optimizer phased is selected, the following flags are ignored:
+    --iterations, --population-size, --islands, --polish-passes,
+    --migration-interval, --checkpoint-interval, --checkpoint-resume,
+    --ng-optimizer. Phased uses its own internal defaults.
+
+    Replaces the unused values with phased-appropriate defaults so that
+    downstream code doesn't need special casing.
+    """
+    unused = []
+    # GA-specific flags that phased doesn't use
+    if hasattr(args, "iterations"):
+        unused.append("--iterations")
+        args.iterations = 100
+    if hasattr(args, "population_size"):
+        unused.append("--population-size")
+        args.population_size = 4
+    if hasattr(args, "islands"):
+        unused.append("--islands")
+        args.islands = 1
+    if hasattr(args, "polish_passes"):
+        unused.append("--polish-passes")
+        args.polish_passes = 0
+    if hasattr(args, "migration_interval"):
+        unused.append("--migration-interval")
+        args.migration_interval = 15
+    if hasattr(args, "checkpoint_interval"):
+        unused.append("--checkpoint-interval")
+        args.checkpoint_interval = 0
+    if hasattr(args, "checkpoint_resume"):
+        unused.append("--checkpoint-resume")
+        args.checkpoint_resume = None
+    # Nevergrad-specific flags that phased manages internally
+    if hasattr(args, "ng_optimizer"):
+        unused.append("--ng-optimizer")
+        args.ng_optimizer = "TwoPointsDE"
+
+    if unused:
+        print(
+            f"Warning: --optimizer phased ignores: {', '.join(unused)}. Phased uses automatic internal defaults.",
+            file=sys.stderr,
+        )
+
+
 def main() -> None:
     """Parse command-line arguments and dispatch to the appropriate subcommand."""
     parser = argparse.ArgumentParser(
@@ -590,9 +706,9 @@ def main() -> None:
     )
     _ = opt_parser.add_argument(
         "--optimizer",
-        choices=["genetic", "nevergrad"],
+        choices=["genetic", "nevergrad", "phased"],
         default="genetic",
-        help="Choose the optimization algorithm (genetic or nevergrad). Default: genetic.",
+        help="Choose the optimization algorithm (genetic, nevergrad, or phased). Default: genetic.",
     )
     _ = opt_parser.add_argument(
         "--iterations",
@@ -645,7 +761,7 @@ def main() -> None:
         "--ng-budget",
         type=int,
         default=1000,
-        help="[Nevergrad] Total number of evaluations (budget) for the Nevergrad optimizer.",
+        help="[Nevergrad/Phased] Total number of evaluations (budget) for the optimizer.",
     )
     _ = opt_parser.add_argument(
         "--ng-optimizer",
@@ -689,6 +805,18 @@ def main() -> None:
             "auto-detects fast backends like /dev/shm (tmpfs) if available."
         ),
     )
+    _ = opt_parser.add_argument(
+        "--max-restarts",
+        type=int,
+        default=1,
+        help="[Phased] Maximum restarts per phase on stagnation. Default: 1.",
+    )
+    _ = opt_parser.add_argument(
+        "--impact-budget",
+        type=int,
+        default=50,
+        help="[Phased] Evaluation budget for empirical impact measurement. Default: 50.",
+    )
 
     # --- fetch-options subcommand ---
     fetch_parser = subparsers.add_parser(
@@ -706,6 +834,10 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+
+    # Validate phased optimizer flags.
+    if hasattr(args, "optimizer") and args.optimizer == "phased":
+        _warn_unused_phased_flags(args)
 
     if args.command == "fetch-options":
         cmd_fetch_options(args)
