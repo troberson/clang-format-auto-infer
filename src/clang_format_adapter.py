@@ -7,8 +7,8 @@ optimization_engine types (SearchSpace, Individual, etc.).
 from __future__ import annotations
 
 import copy
-import os
 import sys
+import threading
 from collections.abc import Callable
 from typing import Any
 
@@ -132,6 +132,8 @@ class FitnessEvaluator:
     _debug: bool
     _file_sample_percentage: float
     _random_seed: int
+    _repo_index: int
+    _repo_lock: threading.Lock
 
     def __init__(
         self,
@@ -150,10 +152,20 @@ class FitnessEvaluator:
         self._debug = debug
         self._file_sample_percentage = file_sample_percentage
         self._random_seed = random_seed
+        self._repo_index = 0
+        self._repo_lock = threading.Lock()
 
     def _get_repo_path(self) -> str:
-        """Select a repo path based on PID to avoid cross-process contention."""
-        return self._repo_paths[os.getpid() % len(self._repo_paths)]
+        """Select a repo path using round-robin to avoid contention.
+
+        Uses a thread-safe counter so each parallel evaluation gets a
+        distinct repo copy. Works for both ThreadPoolExecutor and
+        ProcessPoolExecutor.
+        """
+        with self._repo_lock:
+            idx = self._repo_index % len(self._repo_paths)
+            self._repo_index += 1
+        return self._repo_paths[idx]
 
     def __call__(self, config: dict[str, Any]) -> float:
         # Start from base template and apply config values

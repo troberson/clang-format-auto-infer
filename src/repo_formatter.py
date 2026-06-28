@@ -4,6 +4,7 @@ import sys
 import re
 import shutil
 import random
+import threading
 from .utils import run_command
 
 # Define timeouts for external commands
@@ -89,7 +90,11 @@ def run_clang_format_and_count_changes(
                              Returns -1 if a non-clang-format error occurs (like git diff or file listing).
                              Raises ClangFormatWorkerError if a fatal error occurs (e.g., clang-format not found).
     """
-    temp_config_file = os.path.join(repo_path, ".clang-format.tmp")
+    # Use a unique temp config filename per invocation to avoid thread races.
+    # ThreadPoolExecutor shares the same repo_path across threads, so a shared
+    # filename would cause one thread to overwrite or delete another's config.
+    thread_id = threading.get_ident()
+    temp_config_file = os.path.join(repo_path, f".clang-format.tmp.{thread_id}")
     error_config_dest = "/tmp/clang-format.yml"
 
     # Write the configuration to the temporary file path inside the repo
@@ -297,8 +302,13 @@ def run_clang_format_and_count_changes(
                 cwd=repo_path,
             )
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+            stderr_msg = ""
+            if (
+                isinstance(e, subprocess.CalledProcessError) and e.stderr
+            ):  # pragma: no cover
+                stderr_msg = f" (stderr: {e.stderr.strip()})"
             print(
-                f"Worker {process_id}: Error resetting git repository: {e}",
+                f"Worker {process_id}: Error resetting git repository: {e}{stderr_msg}",
                 file=sys.stderr,
             )
 

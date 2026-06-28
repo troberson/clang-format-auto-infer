@@ -2,6 +2,7 @@
 
 import os
 import subprocess
+import threading
 from unittest.mock import patch, MagicMock
 import pytest
 
@@ -180,7 +181,9 @@ class TestRunClangFormatAndCountChanges:
         _ = run_clang_format_and_count_changes(
             "BasedOnStyle: LLVM\n", repo, 1, False, 100.0, 42
         )
-        assert not os.path.exists(os.path.join(repo, ".clang-format.tmp"))
+        thread_id = threading.get_ident()
+        temp_name = f".clang-format.tmp.{thread_id}"
+        assert not os.path.exists(os.path.join(repo, temp_name))
 
     @patch("src.repo_formatter.run_command")
     def test_git_restore_called(self, mock_run, tmp_path):
