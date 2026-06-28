@@ -85,8 +85,8 @@ class TestFullPipelineWiring:
         assert ss.parameters["IndentWidth"].tier == "structure"
         assert ss.parameters["UseTab"].tier == "polish"
 
-    def test_penalty_options_always_mutable(self):
-        """Penalty options get curated values regardless of detection."""
+    def test_penalty_options_start_fixed(self):
+        """Penalty options get curated values but start fixed."""
         analysis = {
             "IndentWidth": DetectedOption(4, "detected", "structure"),
         }
@@ -94,7 +94,7 @@ class TestFullPipelineWiring:
             json_options={"IndentWidth": {"possible_values": [2, 4, 8]}}
         )
         ss = build_search_space(_make_base_options(), lookups, analysis)
-        assert ss.parameters["PenaltyExcessCharacter"].mutable is True
+        assert ss.parameters["PenaltyExcessCharacter"].fixed is True
         assert ss.parameters["PenaltyExcessCharacter"].possible_values == list(
             CURATED_PENALTY_VALUES
         )
@@ -170,10 +170,10 @@ class TestFullPipelineWiring:
         assert resolve_params[0].name == "IndentWidth"
         assert len(structure_params) == 1
         assert structure_params[0].name == "UseTab"
-        # BreakBeforeBraces + PenaltyExcessCharacter (always mutable, polish tier)
-        assert len(polish_params) == 2
+        # BreakBeforeBraces only. Penalties start fixed.
+        assert len(polish_params) == 1
         polish_names = {p.name for p in polish_params}
-        assert polish_names == {"BreakBeforeBraces", "PenaltyExcessCharacter"}
+        assert polish_names == {"BreakBeforeBraces"}
 
     @patch("src.optimization_engine.phased.run_nevergrad_optimization")
     @patch("src.optimization_engine.phased.run_island_ga")
@@ -222,8 +222,8 @@ class TestFullPipelineWiring:
         # The key invariant: build_search_space accepts polish_undetect
         lookups = _make_lookups()
         ss = build_search_space(_make_base_options(), lookups, polish_undetect=True)
-        # Penalty options should be mutable
-        assert ss.parameters["PenaltyExcessCharacter"].mutable is True
+        # Penalty options start fixed regardless of polish_undetect
+        assert ss.parameters["PenaltyExcessCharacter"].fixed is True
 
     def test_cli_wiring_genetic_does_not_pass_polish_undetect(self):
         """Non-phased optimizers default to polish_undetect=False."""
@@ -259,9 +259,9 @@ class TestFullPipelineWiring:
             json_options={"IndentWidth": {"possible_values": [2, 4, 8]}}
         )
         ss = build_search_space(_make_base_options(), lookups, analysis)
-        # IndentWidth is detected, PenaltyExcessCharacter is penalty
+        # IndentWidth is detected, PenaltyExcessCharacter starts fixed
         assert "IndentWidth" in ss.mutable_names
-        assert "PenaltyExcessCharacter" in ss.mutable_names
+        assert "PenaltyExcessCharacter" not in ss.mutable_names
         assert "UseTab" not in ss.mutable_names
 
     def test_initial_config_seeded_from_analysis(self):
@@ -352,8 +352,8 @@ class TestFullPipelineWiring:
         polish_params = ss.mutable_by_tier("polish")
         assert len(resolve_params) == 1
         assert resolve_params[0].name == "IndentWidth"
-        # UseTab, ColumnLimit, PenaltyExcessCharacter are all polish tier
-        assert len(polish_params) == 3
+        # UseTab, ColumnLimit are polish tier. Penalties start fixed.
+        assert len(polish_params) == 2
 
         # Step 6: Verify initial config seeding
         initial_config = {}

@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 import random
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable
 
 from .types import Individual, ParameterDef, SearchSpace
@@ -202,6 +203,107 @@ def perform_migration(
                 )
 
 
+def _evolve_island_task(
+    island_idx: int,
+    population: list[Individual],
+    island_size: int,
+    search_space: SearchSpace,
+    fitness_fn: FitnessFn,
+    rng: random.Random,
+    debug: bool,
+    debug_prefix: str,
+) -> tuple[int, list[Individual], float]:
+    """Evolve one island and return (index, new_population, best_fitness)."""
+    island_prefix = f"{debug_prefix}Island {island_idx + 1}: "
+    new_pop = evolve_island_generation(
+        population, island_size, search_space, fitness_fn, rng, debug, island_prefix
+    )
+    best_fitness = min(ind.fitness for ind in new_pop) if new_pop else float("inf")
+    return island_idx, new_pop, best_fitness
+
+
+# Maximum number of mutable parameters to randomize per individual during
+# initial population diversity injection. The effective diversity rate is
+# capped at MAX_MUTABLE_RANDOMIZED / num_mutable_params so that repos with
+# many options don't end up randomizing half their config.
+MAX_MUTABLE_RANDOMIZED = 3
+
+
+def _effective_diversity_rate(
+    diversity_rate: float,
+    num_mutable: int,
+) -> float:
+    """Compute an effective diversity rate that scales with problem size.
+
+    Caps the rate so that at most MAX_MUTABLE_RANDOMIZED parameters are
+    randomized per individual, regardless of how many mutable parameters
+    exist. This prevents excessive noise when the search space is large.
+
+    Args:
+        diversity_rate: User-provided base rate (0.0-1.0).
+        num_mutable: Number of mutable parameters in the search space.
+
+    Returns:
+        Capped diversity rate.
+    """
+    if num_mutable <= 0:
+        return 0.0
+    return min(diversity_rate, MAX_MUTABLE_RANDOMIZED / num_mutable)
+
+
+def _initialize_population(
+    initial_config: dict[str, Any],
+    search_space: SearchSpace,
+    fitness_fn: FitnessFn,
+    island_size: int,
+    rng: random.Random,
+    diversity_rate: float = 0.5,
+) -> tuple[list[Individual], int]:
+    """Create a diverse initial population for one island.
+
+    Individual 0 is an exact copy of *initial_config* (anchor baseline).
+    Each subsequent individual randomizes a fraction of mutable parameters
+    from their *possible_values*, keeping the rest from *initial_config*.
+
+    The effective diversity rate is capped so that at most
+    MAX_MUTABLE_RANDOMIZED parameters are randomized per individual,
+    preventing excessive noise when the search space is large.
+
+    Args:
+        initial_config: Starting configuration.
+        search_space: Defines mutable parameters and their possible values.
+        fitness_fn: Fitness evaluation function.
+        island_size: Number of individuals to create.
+        rng: Random number generator for reproducibility.
+        diversity_rate: Base fraction of mutable parameters to randomize per
+            individual (0.0 = all identical, 1.0 = all randomized).
+            Actually capped by MAX_MUTABLE_RANDOMIZED.
+
+    Returns:
+        Tuple of (population list, number of fitness evaluations performed).
+    """
+    mutable = _get_mutable_options(initial_config, search_space)
+    effective_rate = _effective_diversity_rate(diversity_rate, len(mutable))
+    pop: list[Individual] = []
+    eval_count = 0
+
+    for i in range(island_size):
+        if i == 0 or not mutable or effective_rate <= 0.0:
+            # Anchor: exact copy of initial config.
+            config = copy.deepcopy(initial_config)
+        else:
+            config = copy.deepcopy(initial_config)
+            for param in mutable:
+                if rng.random() < effective_rate:
+                    config[param.name] = rng.choice(param.possible_values)
+
+        fitness = fitness_fn(config)
+        eval_count += 1
+        pop.append(Individual(config=config, fitness=fitness))
+
+    return pop, eval_count
+
+
 def run_island_ga(
     initial_config: dict[str, Any],
     search_space: SearchSpace,
@@ -212,6 +314,12 @@ def run_island_ga(
     migration_interval: int = 15,
     debug: bool = False,
     random_seed: int | None = None,
+    convergence_threshold: int | None = None,
+    budget: int | None = None,
+    debug_prefix: str = "",
+    min_improvement_ratio: float = 0.001,
+    num_workers: int = 1,
+    diversity_rate: float = 0.5,
 ) -> Individual:
     """Run the full island-model GA.
 
@@ -225,6 +333,21 @@ def run_island_ga(
         migration_interval: Generations between migrations.
         debug: Print verbose output.
         random_seed: Seed for reproducibility.
+        convergence_threshold: If set, stop early when no improvement occurs
+            for this many consecutive generations. None means run full iterations.
+        budget: If set, stop when this many fitness evaluations are exceeded.
+            None means no budget limit.
+        debug_prefix: Prefix prepended to all debug print lines.
+        min_improvement_ratio: Minimum fractional improvement over current best
+            to reset the convergence counter. Improvements smaller than this
+            threshold are treated as noise and do not reset the counter.
+        num_workers: Maximum number of islands to evolve in parallel per
+            generation. Set to 1 for sequential execution (default). Values
+            greater than 1 use ThreadPoolExecutor to parallelize island evolution.
+        diversity_rate: Fraction of mutable parameters to randomize in the
+            initial population per individual (0.0 = all identical clones,
+            1.0 = all randomized). Default 0.5 gives a balance of exploration
+            and exploitation from generation 0.
 
     Returns:
         The best individual found.
@@ -236,65 +359,145 @@ def run_island_ga(
     if island_size * num_islands > population_size:
         population_size = island_size * num_islands
 
-    # Evaluate initial fitness
-    initial_fitness = fitness_fn(copy.deepcopy(initial_config))
-
-    # Initialize populations
+    # Initialize diverse populations — each island gets unique starting individuals.
     populations: list[list[Individual]] = []
-    for _ in range(num_islands):
-        pop = [
-            Individual(config=copy.deepcopy(initial_config), fitness=initial_fitness)
-            for _ in range(island_size)
-        ]
-        populations.append(pop)
+    total_init_evals = 0
+    best_init_fitness = float("inf")
+    best_init_config: dict[str, Any] | None = None
 
+    for _ in range(num_islands):
+        pop, evals = _initialize_population(
+            initial_config, search_space, fitness_fn, island_size, rng, diversity_rate
+        )
+        populations.append(pop)
+        total_init_evals += evals
+        for ind in pop:
+            if ind.fitness < best_init_fitness:
+                best_init_fitness = ind.fitness
+                best_init_config = copy.deepcopy(ind.config)
+
+    # island_size is always >= 5, so best_init_config is guaranteed non-None.
+    assert best_init_config is not None
     best_overall = Individual(
-        config=copy.deepcopy(initial_config),
-        fitness=initial_fitness,
+        config=best_init_config,
+        fitness=best_init_fitness,
     )
 
-    fitness_history: list[list[float]] = [[initial_fitness] for _ in range(num_islands)]
+    fitness_history: list[list[float]] = [
+        [min(ind.fitness for ind in pop)] for pop in populations
+    ]
+    no_improve_count = 0
+    eval_count = total_init_evals
 
     for iteration in range(num_iterations):
+        prev_best = best_overall.fitness
+
+        # Seed per-island RNGs from the main RNG to ensure deterministic behavior.
+        # Each island gets its own RNG instance to avoid thread-safety issues.
+        island_seeds = [rng.random() for _ in range(num_islands)]
+        island_rngs = [random.Random(s) for s in island_seeds]
+
+        # Evolve islands in parallel using ThreadPoolExecutor.
+        max_workers = min(num_workers, num_islands)
+        if max_workers > 1:
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {
+                    executor.submit(
+                        _evolve_island_task,
+                        i,
+                        pop,
+                        island_size,
+                        search_space,
+                        fitness_fn,
+                        island_rngs[i],
+                        debug,
+                        debug_prefix,
+                    ): i
+                    for i, pop in enumerate(populations)
+                }
+                results = []
+                for future in as_completed(futures):
+                    results.append(future.result())
+
+                # Update populations and track best
+                for idx, new_pop, _ in results:
+                    populations[idx] = new_pop
+                    best_in_island = min(new_pop, key=lambda ind: ind.fitness)
+                    fitness_history[idx].append(best_in_island.fitness)
+                    if best_in_island.fitness < best_overall.fitness:
+                        best_overall = Individual(
+                            config=copy.deepcopy(best_in_island.config),
+                            fitness=best_in_island.fitness,
+                        )
+
+                eval_count += island_size * num_islands
+        else:
+            # Sequential execution (original behavior)
+            for i, pop in enumerate(populations):
+                island_prefix = f"{debug_prefix}Island {i + 1}: "
+                new_pop = evolve_island_generation(
+                    pop,
+                    island_size,
+                    search_space,
+                    fitness_fn,
+                    island_rngs[i],
+                    debug,
+                    island_prefix,
+                )
+                populations[i] = new_pop
+                eval_count += island_size
+
+                best_in_island = min(new_pop, key=lambda ind: ind.fitness)
+                fitness_history[i].append(best_in_island.fitness)
+
+                if best_in_island.fitness < best_overall.fitness:
+                    best_overall = Individual(
+                        config=copy.deepcopy(best_in_island.config),
+                        fitness=best_in_island.fitness,
+                    )
+
+        # Convergence detection
+        if best_overall.fitness == prev_best:
+            no_improve_count += 1
+        else:
+            improvement = (prev_best - best_overall.fitness) / max(abs(prev_best), 1)
+            if improvement < min_improvement_ratio:
+                no_improve_count += 1
+            else:
+                no_improve_count = 0
+
+        # Single compact debug line per iteration: stage, iteration, fitness, convergence.
         if debug:
+            conv_str = (
+                f" conv {no_improve_count}/{convergence_threshold}"
+                if convergence_threshold is not None
+                else ""
+            )
             print(
-                f"\n--- Iteration {iteration + 1}/{num_iterations} ---",
+                f"{debug_prefix}Iter {iteration + 1}/{num_iterations} fitness={best_overall.fitness}{conv_str}",
                 file=sys.stderr,
             )
 
-        # Evolve each island sequentially (caller handles parallelism)
-        for i, pop in enumerate(populations):
-            debug_prefix = f"Island {i + 1}: "
-            new_pop = evolve_island_generation(
-                pop, island_size, search_space, fitness_fn, rng, debug, debug_prefix
-            )
-            populations[i] = new_pop
-
-            best_in_island = min(new_pop, key=lambda ind: ind.fitness)
-            fitness_history[i].append(best_in_island.fitness)
-
-            if debug:
-                print(
-                    f"  Island {i + 1} best fitness: {best_in_island.fitness}",
-                    file=sys.stderr,
-                )
-
-            if best_in_island.fitness < best_overall.fitness:
-                best_overall = Individual(
-                    config=copy.deepcopy(best_in_island.config),
-                    fitness=best_in_island.fitness,
-                )
-                if debug:
-                    print(
-                        f"  New overall best fitness: {best_overall.fitness}",
-                        file=sys.stderr,
-                    )
-
         # Early termination on perfect fitness
         if best_overall.fitness == 0:
+            break
+
+        # Budget check
+        if budget is not None and eval_count >= budget:
             if debug:
                 print(
-                    f"\nPerfect configuration found (fitness=0) at iteration {iteration + 1}.",
+                    f"{debug_prefix}Budget exhausted after {iteration + 1} iterations ({eval_count} evals).",
+                    file=sys.stderr,
+                )
+            break
+
+        if (
+            convergence_threshold is not None
+            and no_improve_count >= convergence_threshold
+        ):
+            if debug:
+                print(
+                    f"{debug_prefix}Converged after {iteration + 1} iterations.",
                     file=sys.stderr,
                 )
             break

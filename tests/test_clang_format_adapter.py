@@ -185,7 +185,7 @@ class TestBuildSearchSpace:
         }
         lookups = _make_lookups()
         ss = build_search_space(base, lookups)
-        assert ss.parameters["PenaltyExcessCharacter"].mutable is True
+        assert ss.parameters["PenaltyExcessCharacter"].fixed is True
         assert ss.parameters["PenaltyExcessCharacter"].possible_values == list(
             CURATED_PENALTY_VALUES
         )
@@ -249,7 +249,8 @@ class TestBuildSearchSpace:
         ss = build_search_space(base, lookups, analysis)
         # Detected path takes precedence over penalty curated values
         assert ss.parameters["PenaltyExcessCharacter"].possible_values == [100, 200]
-        assert ss.parameters["PenaltyExcessCharacter"].mutable is True
+        # But penalty options are always fixed, even when detected
+        assert ss.parameters["PenaltyExcessCharacter"].fixed is True
 
     def test_forced_option_takes_precedence_over_penalty(self):
         base = {

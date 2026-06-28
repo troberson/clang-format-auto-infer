@@ -9,6 +9,7 @@ from .ga import (
 from .polish import polish_coordinate_descent
 from .nevergrad import build_instrumentation, run_nevergrad_optimization
 from .phased import run_phased_optimization
+from .iterative import run_iterative_optimization
 
 __all__ = [
     "Individual",
@@ -24,4 +25,5 @@ __all__ = [
     "build_instrumentation",
     "run_nevergrad_optimization",
     "run_phased_optimization",
+    "run_iterative_optimization",
 ]

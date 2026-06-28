@@ -171,6 +171,7 @@ def _run_phase(
             population_size=population_size,
             num_iterations=ga_iterations,
             debug=debug,
+            num_workers=num_workers,
         )
 
         if best_ga.fitness < best_fitness:

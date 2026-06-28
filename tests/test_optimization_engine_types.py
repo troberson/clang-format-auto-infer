@@ -59,6 +59,99 @@ class TestSearchSpace:
         assert ss.mutable_parameters == []
         assert ss.mutable_names == []
 
+    def test_remaining_fixed_returns_only_fixed_params(self):
+        params = {
+            "a": ParameterDef(name="a", param_type="int", possible_values=[1, 2]),
+            "b": ParameterDef(name="b", param_type="bool", fixed=True),
+            "c": ParameterDef(
+                name="c", param_type="str", fixed=True, possible_values=["x", "y"]
+            ),
+        }
+        ss = SearchSpace(parameters=params)
+        fixed = ss.remaining_fixed()
+        assert len(fixed) == 2
+        assert {p.name for p in fixed} == {"b", "c"}
+
+    def test_remaining_fixed_empty_when_all_mutable(self):
+        params = {
+            "a": ParameterDef(name="a", param_type="int", possible_values=[1, 2]),
+        }
+        ss = SearchSpace(parameters=params)
+        assert ss.remaining_fixed() == []
+
+    def test_unlock_makes_fixed_params_mutable(self):
+        params = {
+            "a": ParameterDef(name="a", param_type="int", possible_values=[1, 2]),
+            "b": ParameterDef(
+                name="b", param_type="str", fixed=True, possible_values=["x", "y"]
+            ),
+        }
+        ss = SearchSpace(parameters=params)
+        ss2 = ss.unlock(["b"])
+        assert ss.parameters["b"].fixed is True
+        assert ss2.parameters["b"].fixed is False
+        assert ss2.parameters["b"].mutable is True
+        assert ss2.parameters["b"].possible_values == ["x", "y"]
+
+    def test_unlock_does_not_mutate_original(self):
+        params = {
+            "a": ParameterDef(
+                name="a", param_type="str", fixed=True, possible_values=["x", "y"]
+            ),
+        }
+        ss = SearchSpace(parameters=params)
+        ss2 = ss.unlock(["a"])
+        assert ss.parameters["a"].fixed is True
+        assert ss2.parameters["a"].fixed is False
+
+    def test_unlock_skips_params_without_possible_values(self):
+        params = {
+            "a": ParameterDef(
+                name="a", param_type="str", fixed=True, possible_values=[]
+            ),
+        }
+        ss = SearchSpace(parameters=params)
+        ss2 = ss.unlock(["a"])
+        assert ss2.parameters["a"].fixed is True
+
+    def test_unlock_ignores_unknown_names(self):
+        params = {
+            "a": ParameterDef(name="a", param_type="int", possible_values=[1]),
+        }
+        ss = SearchSpace(parameters=params)
+        ss2 = ss.unlock(["nonexistent"])
+        assert "nonexistent" not in ss2.parameters
+
+    def test_unlock_preserves_tier(self):
+        params = {
+            "a": ParameterDef(
+                name="a",
+                param_type="str",
+                fixed=True,
+                possible_values=["x"],
+                tier="resolve",
+            ),
+        }
+        ss = SearchSpace(parameters=params)
+        ss2 = ss.unlock(["a"])
+        assert ss2.parameters["a"].tier == "resolve"
+
+    def test_unlock_multiple_params(self):
+        params = {
+            "a": ParameterDef(
+                name="a", param_type="str", fixed=True, possible_values=["x"]
+            ),
+            "b": ParameterDef(
+                name="b", param_type="int", fixed=True, possible_values=[1, 2]
+            ),
+            "c": ParameterDef(name="c", param_type="bool", fixed=True),
+        }
+        ss = SearchSpace(parameters=params)
+        ss2 = ss.unlock(["a", "b"])
+        assert ss2.parameters["a"].fixed is False
+        assert ss2.parameters["b"].fixed is False
+        assert ss2.parameters["c"].fixed is True
+
 
 class TestIndividual:
     def test_construction(self):

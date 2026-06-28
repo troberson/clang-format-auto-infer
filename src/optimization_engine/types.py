@@ -57,6 +57,38 @@ class SearchSpace:
         """Return mutable parameters belonging to the given tier."""
         return [p for p in self.mutable_parameters if p.tier == tier]
 
+    def remaining_fixed(self) -> list[ParameterDef]:
+        """Return parameters that are still fixed (not yet unlocked)."""
+        return [p for p in self.parameters.values() if p.fixed]
+
+    def unlock(self, names: list[str]) -> SearchSpace:
+        """Return a new SearchSpace with the given parameters unlocked.
+
+        Unlocked parameters become mutable with tier 'polish' and inherit
+        their possible_values from the existing definition. If a parameter
+        has no possible_values, it is not unlocked.
+
+        Args:
+            names: Parameter names to unlock.
+
+        Returns:
+            A new SearchSpace with the specified parameters mutable.
+        """
+        new_parameters: dict[str, ParameterDef] = {}
+        name_set = set(names)
+        for name, param in self.parameters.items():
+            if name in name_set and param.fixed and param.possible_values:
+                new_parameters[name] = ParameterDef(
+                    name=param.name,
+                    param_type=param.param_type,
+                    possible_values=param.possible_values,
+                    fixed=False,
+                    tier=param.tier,
+                )
+            else:
+                new_parameters[name] = param
+        return SearchSpace(parameters=new_parameters)
+
 
 @dataclass
 class Individual:
@@ -78,7 +110,10 @@ class OptimizationResult:
     Attributes:
         best_config: The best configuration found.
         best_fitness: Fitness of the best configuration.
+        evaluations_used: Number of fitness evaluations actually performed.
+            Allows callers to deduct only consumed budget.
     """
 
     best_config: dict[str, Any]
     best_fitness: float
+    evaluations_used: int = 0

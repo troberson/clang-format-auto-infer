@@ -19,6 +19,7 @@ from src.data_classes import GeneticAlgorithmLookups
 from src.optimization_engine import (
     polish_coordinate_descent,
     run_island_ga,
+    run_iterative_optimization,
     run_nevergrad_optimization,
     run_phased_optimization,
 )
@@ -30,6 +31,7 @@ from src.clang_format_adapter import (
 from src.analyze_conventions import (
     analyze_with_metadata,
     measure_impact,
+    measure_remaining_impact,
 )
 from src.utils import run_command
 
@@ -452,12 +454,13 @@ def cmd_optimize(args: argparse.Namespace) -> None:
         optimized_options_info = None
 
         # Build search space and fitness function.
-        # Phased optimizer unlocks undetected options for the polish phase.
+        # Phased unlocks undetected options for polish; iterative starts with
+        # detected mutable and expands empirically.
         search_space = build_search_space(
             options_info,
             lookups,
             analysis_results,
-            polish_undetect=args.optimizer == "phased",
+            polish_undetect=args.optimizer in ("phased", "iterative"),
         )
         initial_config = {k: v.get("value") for k, v in options_info.items()}
 
@@ -489,6 +492,7 @@ def cmd_optimize(args: argparse.Namespace) -> None:
                 migration_interval=args.migration_interval,
                 debug=debug_mode,
                 random_seed=RANDOM_SEED,
+                num_workers=args.jobs,
             )
             # Polish with coordinate descent
             if args.polish_passes > 0:
@@ -525,6 +529,30 @@ def cmd_optimize(args: argparse.Namespace) -> None:
                 population_size=args.population_size,
                 num_workers=num_jobs,
                 max_restarts=args.max_restarts,
+                debug=debug_mode,
+            )
+            optimized_options_info = config_to_flat_options(
+                result.best_config, options_info
+            )
+        elif args.optimizer == "iterative":
+            result = run_iterative_optimization(
+                search_space=search_space,
+                fitness_fn=fitness_fn,
+                initial_config=initial_config,
+                total_budget=args.ng_budget,
+                impact_fn=measure_remaining_impact,
+                impact_kwargs=dict(
+                    repo_path=temp_repo_paths[0],
+                    base_options=options_info,
+                    lookups=lookups,
+                    process_id=0,
+                    debug=debug_mode,
+                    file_sample_percentage=args.file_sample_percentage,
+                    random_seed=RANDOM_SEED,
+                ),
+                num_islands=args.islands,
+                population_size=args.population_size,
+                num_workers=num_jobs,
                 debug=debug_mode,
             )
             optimized_options_info = config_to_flat_options(
@@ -622,14 +650,14 @@ def cmd_fetch_options(args: argparse.Namespace) -> None:
 
 
 def _warn_unused_phased_flags(args: argparse.Namespace) -> None:
-    """Warn about and override GA/nevergrad-specific flags for phased optimizer.
+    """Warn about and override GA/nevergrad-specific flags for phased/iterative optimizer.
 
-    When --optimizer phased is selected, the following flags are ignored:
-    --iterations, --population-size, --islands, --polish-passes,
-    --migration-interval, --checkpoint-interval, --checkpoint-resume,
-    --ng-optimizer. Phased uses its own internal defaults.
+    When --optimizer phased or --optimizer iterative is selected, the following
+    flags are ignored: --iterations, --population-size, --islands, --polish-passes,
+    --migration-interval, --checkpoint-interval, --checkpoint-resume, --ng-optimizer.
+    These optimizers use their own internal defaults.
 
-    Replaces the unused values with phased-appropriate defaults so that
+    Replaces the unused values with optimizer-appropriate defaults so that
     downstream code doesn't need special casing.
     """
     unused = []
@@ -642,7 +670,7 @@ def _warn_unused_phased_flags(args: argparse.Namespace) -> None:
         args.population_size = 4
     if hasattr(args, "islands"):
         unused.append("--islands")
-        args.islands = 1
+        args.islands = getattr(args, "jobs", 1)
     if hasattr(args, "polish_passes"):
         unused.append("--polish-passes")
         args.polish_passes = 0
@@ -661,8 +689,9 @@ def _warn_unused_phased_flags(args: argparse.Namespace) -> None:
         args.ng_optimizer = "TwoPointsDE"
 
     if unused:
+        optimizer_name = getattr(args, "optimizer", "phased")
         print(
-            f"Warning: --optimizer phased ignores: {', '.join(unused)}. Phased uses automatic internal defaults.",
+            f"Warning: --optimizer {optimizer_name} ignores: {', '.join(unused)}. {optimizer_name.capitalize()} uses automatic internal defaults.",
             file=sys.stderr,
         )
 
@@ -706,9 +735,9 @@ def main() -> None:
     )
     _ = opt_parser.add_argument(
         "--optimizer",
-        choices=["genetic", "nevergrad", "phased"],
+        choices=["genetic", "nevergrad", "phased", "iterative"],
         default="genetic",
-        help="Choose the optimization algorithm (genetic, nevergrad, or phased). Default: genetic.",
+        help="Choose the optimization algorithm (genetic, nevergrad, phased, or iterative). Default: genetic.",
     )
     _ = opt_parser.add_argument(
         "--iterations",
@@ -815,7 +844,7 @@ def main() -> None:
         "--impact-budget",
         type=int,
         default=50,
-        help="[Phased] Evaluation budget for empirical impact measurement. Default: 50.",
+        help="[Phased/Iterative] Evaluation budget for empirical impact measurement. Default: 50.",
     )
 
     # --- fetch-options subcommand ---
@@ -835,8 +864,8 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    # Validate phased optimizer flags.
-    if hasattr(args, "optimizer") and args.optimizer == "phased":
+    # Validate phased/iterative optimizer flags.
+    if hasattr(args, "optimizer") and args.optimizer in ("phased", "iterative"):
         _warn_unused_phased_flags(args)
 
     if args.command == "fetch-options":

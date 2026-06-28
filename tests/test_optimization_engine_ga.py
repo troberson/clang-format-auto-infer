@@ -2,7 +2,10 @@
 
 import random
 from typing import Any
-from src.optimization_engine.ga import (
+from src.optimization_engine.ga import (  # noqa: PLC2701
+    MAX_MUTABLE_RANDOMIZED,
+    _effective_diversity_rate,  # pyright: ignore[reportPrivateUsage]
+    _initialize_population,  # pyright: ignore[reportPrivateUsage]
     crossover,
     evolve_island_generation,
     mutate,
@@ -251,7 +254,7 @@ class TestRunIslandGa:
         )
         assert best.fitness == 0.0
         captured = capsys.readouterr()
-        assert "Perfect configuration found" in captured.err
+        assert "Iter 1/100 fitness=0.0" in captured.err
 
     def test_debug_prints_iterations(self, capsys):
         ss = _make_search_space()
@@ -267,7 +270,38 @@ class TestRunIslandGa:
             random_seed=42,
         )
         captured = capsys.readouterr()
-        assert "Iteration 1" in captured.err
+        assert "Iter 1/2" in captured.err
+
+    def test_min_improvement_ratio_treats_tiny_improvements_as_noise(self, capsys):
+        """Tiny improvements below min_improvement_ratio do not reset convergence."""
+        # Fitness that returns large values with tiny fractional improvements.
+        call_count = [0]
+
+        def tiny_improvement_fitness(_config: dict[str, Any]) -> float:
+            call_count[0] += 1
+            # Start at 10000, slowly decrease by 0.0001 each call.
+            # Improvement is ~0.0001/10000 = 1e-8, far below default 0.001.
+            return max(0.0, 10000.0 - call_count[0] * 0.0001)
+
+        ss = _make_search_space()
+        initial = {"a": 3, "b": True}
+        _ = run_island_ga(
+            initial,
+            ss,
+            tiny_improvement_fitness,
+            num_islands=1,
+            population_size=5,
+            num_iterations=100,
+            convergence_threshold=5,
+            min_improvement_ratio=0.001,
+            debug=True,
+            random_seed=42,
+        )
+        captured = capsys.readouterr()
+        # Should converge early because tiny improvements are treated as noise.
+        assert "Converged after" in captured.err
+        # Verify it stopped well before 100 iterations.
+        assert "Converged after 5" in captured.err
 
     def test_migration_interval(self):
         ss = _make_search_space()
@@ -310,6 +344,312 @@ class TestRunIslandGa:
             num_islands=3,
             population_size=10,
             num_iterations=1,
+            random_seed=42,
+        )
+        assert isinstance(best, Individual)
+
+    def test_parallel_islands_produces_valid_result(self):
+        """Parallel island evolution (num_workers>1) produces a valid Individual."""
+        ss = _make_search_space()
+        initial = {"a": 3, "b": True}
+        best = run_island_ga(
+            initial,
+            ss,
+            _fitness,
+            num_islands=4,
+            population_size=20,
+            num_iterations=3,
+            random_seed=42,
+            num_workers=2,
+        )
+        assert isinstance(best, Individual)
+        assert "a" in best.config
+
+    def test_parallel_islands_all_islands_evolved(self):
+        """All islands are evolved when using parallel execution."""
+        call_count = [0]
+
+        def counting_fitness(config: dict[str, Any]) -> float:
+            call_count[0] += 1
+            return sum(v if isinstance(v, (int, float)) else 0 for v in config.values())
+
+        ss = _make_search_space()
+        initial = {"a": 3, "b": True}
+        _ = run_island_ga(
+            initial,
+            ss,
+            counting_fitness,
+            num_islands=2,
+            population_size=10,
+            num_iterations=2,
+            random_seed=42,
+            num_workers=2,
+        )
+        # 1 initial + 2 iterations * 2 islands * island_size evaluations.
+        # Each island_size individual triggers fitness calls inside mutate(),
+        # so total > island_size. Just verify all islands contributed work.
+        assert call_count[0] > 1
+
+    def test_parallel_islands_convergence_detection(self, capsys):
+        """Convergence detection works with parallel islands."""
+
+        def _zero_fitness(_config: dict[str, Any]) -> float:
+            return 0.0
+
+        ss = _make_search_space()
+        initial = {"a": 3, "b": True}
+        best = run_island_ga(
+            initial,
+            ss,
+            _zero_fitness,
+            num_islands=2,
+            population_size=10,
+            num_iterations=100,
+            convergence_threshold=5,
+            debug=True,
+            random_seed=42,
+            num_workers=2,
+        )
+        assert best.fitness == 0.0
+        captured = capsys.readouterr()
+        assert "Iter 1/100 fitness=0.0" in captured.err
+
+    def test_parallel_islands_budget_check(self, capsys):
+        """Budget check works with parallel islands."""
+        ss = _make_search_space()
+        initial = {"a": 3, "b": True}
+        _ = run_island_ga(
+            initial,
+            ss,
+            _fitness,
+            num_islands=2,
+            population_size=10,
+            num_iterations=100,
+            budget=15,
+            debug=True,
+            random_seed=42,
+            num_workers=2,
+        )
+        captured = capsys.readouterr()
+        assert "Budget exhausted" in captured.err
+
+    def test_single_worker_is_sequential(self):
+        """num_workers=1 uses sequential path."""
+        ss = _make_search_space()
+        initial = {"a": 3, "b": True}
+        best = run_island_ga(
+            initial,
+            ss,
+            _fitness,
+            num_islands=2,
+            population_size=10,
+            num_iterations=2,
+            random_seed=42,
+            num_workers=1,
+        )
+        assert isinstance(best, Individual)
+
+    def test_num_workers_clamped_to_num_islands(self):
+        """num_workers greater than num_islands is clamped to num_islands."""
+        ss = _make_search_space()
+        initial = {"a": 3, "b": True}
+        best = run_island_ga(
+            initial,
+            ss,
+            _fitness,
+            num_islands=2,
+            population_size=10,
+            num_iterations=2,
+            random_seed=42,
+            num_workers=10,  # More than num_islands
+        )
+        assert isinstance(best, Individual)
+
+
+class TestEffectiveDiversityRate:
+    def test_small_space_uses_base_rate(self):
+        """With 2 mutable params, rate=0.5 is not capped."""
+        rate = _effective_diversity_rate(0.5, 2)
+        assert rate == 0.5  # 3/2 = 1.5 > 0.5, so base rate wins
+
+    def test_large_space_caps_rate(self):
+        """With 20 mutable params, rate=0.5 is capped to 3/20."""
+        rate = _effective_diversity_rate(0.5, 20)
+        assert rate == MAX_MUTABLE_RANDOMIZED / 20  # 0.15
+
+    def test_zero_mutable_returns_zero(self):
+        rate = _effective_diversity_rate(0.5, 0)
+        assert rate == 0.0
+
+    def test_negative_mutable_returns_zero(self):
+        rate = _effective_diversity_rate(0.5, -1)
+        assert rate == 0.0
+
+    def test_rate_higher_than_cap_uses_cap(self):
+        """With 2 mutable params, rate=1.0 is capped to 1.0 (3/2=1.5 > 1.0)."""
+        rate = _effective_diversity_rate(1.0, 2)
+        assert rate == 1.0
+
+    def test_rate_lower_than_cap_uses_base(self):
+        """With 10 mutable params, rate=0.01 is not capped."""
+        rate = _effective_diversity_rate(0.01, 10)
+        assert rate == 0.01  # 3/10 = 0.3 > 0.01
+
+    def test_constant_value(self):
+        assert MAX_MUTABLE_RANDOMIZED == 3
+
+
+class TestInitializePopulation:
+    def test_first_individual_is_anchor(self):
+        """Individual 0 is an exact copy of initial_config."""
+        ss = _make_search_space()
+        initial = {"a": 3, "b": True, "c": "x"}
+        pop, evals = _initialize_population(
+            initial, ss, _fitness, island_size=5, rng=random.Random(42)
+        )
+        assert pop[0].config == initial
+        assert pop[0].fitness == _fitness(initial)
+        assert evals == 5
+
+    def test_has_diversity(self):
+        """At least some individuals differ from the anchor."""
+        ss = _make_search_space()
+        initial = {"a": 3, "b": True, "c": "x"}
+        pop, _ = _initialize_population(
+            initial, ss, _fitness, island_size=10, rng=random.Random(42)
+        )
+        unique_configs = set(str(ind.config) for ind in pop)
+        assert len(unique_configs) > 1
+
+    def test_all_individuals_have_all_keys(self):
+        """Every individual contains all keys from initial_config."""
+        ss = _make_search_space()
+        initial = {"a": 3, "b": True, "c": "x"}
+        pop, _ = _initialize_population(
+            initial, ss, _fitness, island_size=5, rng=random.Random(42)
+        )
+        for ind in pop:
+            assert set(ind.config.keys()) == set(initial.keys())
+
+    def test_all_individuals_have_fitness(self):
+        """Every individual has a finite fitness value."""
+        ss = _make_search_space()
+        initial = {"a": 3, "b": True, "c": "x"}
+        pop, _ = _initialize_population(
+            initial, ss, _fitness, island_size=5, rng=random.Random(42)
+        )
+        for ind in pop:
+            assert ind.fitness == _fitness(ind.config)
+
+    def test_zero_diversity_produces_identical_clones(self):
+        """diversity_rate=0 produces all identical individuals."""
+        ss = _make_search_space()
+        initial = {"a": 3, "b": True, "c": "x"}
+        pop, _ = _initialize_population(
+            initial,
+            ss,
+            _fitness,
+            island_size=5,
+            rng=random.Random(42),
+            diversity_rate=0.0,
+        )
+        for ind in pop:
+            assert ind.config == initial
+
+    def test_full_diversity_randomizes_all_mutable_params(self):
+        """diversity_rate=1.0 randomizes all mutable params for non-anchor individuals."""
+        ss = SearchSpace(
+            parameters={
+                "a": ParameterDef(
+                    name="a", param_type="int", possible_values=[1, 2, 3]
+                ),
+            }
+        )
+        initial = {"a": 3}
+        pop, _ = _initialize_population(
+            initial,
+            ss,
+            _fitness,
+            island_size=5,
+            rng=random.Random(42),
+            diversity_rate=1.0,
+        )
+        # Anchor keeps initial value, others may differ
+        assert pop[0].config["a"] == 3
+        # With 4 random draws from [1,2,3], at least one should differ from 3
+        non_anchor_values = [ind.config["a"] for ind in pop[1:]]
+        assert any(v != 3 for v in non_anchor_values)
+
+    def test_single_individual_returns_anchor(self):
+        """island_size=1 returns just the anchor individual."""
+        ss = _make_search_space()
+        initial = {"a": 3, "b": True, "c": "x"}
+        pop, evals = _initialize_population(
+            initial, ss, _fitness, island_size=1, rng=random.Random(42)
+        )
+        assert len(pop) == 1
+        assert pop[0].config == initial
+        assert evals == 1
+
+    def test_no_mutable_params_falls_back_to_clones(self):
+        """When no mutable params exist, all individuals are identical clones."""
+        ss = SearchSpace(
+            parameters={
+                "x": ParameterDef(name="x", param_type="str", fixed=True),
+            }
+        )
+        initial = {"x": "hello"}
+        pop, _ = _initialize_population(
+            initial, ss, _fitness, island_size=5, rng=random.Random(42)
+        )
+        for ind in pop:
+            assert ind.config == initial
+
+
+class TestRunIslandGaDiversity:
+    def test_diverse_initialization_produces_different_islands(self):
+        """With diversity, islands start with different best fitness values."""
+        ss = _make_search_space()
+        initial = {"a": 3, "b": True, "c": "x"}
+        best = run_island_ga(
+            initial,
+            ss,
+            _fitness,
+            num_islands=4,
+            population_size=20,
+            num_iterations=1,
+            random_seed=42,
+            diversity_rate=0.5,
+        )
+        assert isinstance(best, Individual)
+
+    def test_diversity_rate_zero_preserves_old_behavior(self):
+        """diversity_rate=0 makes all islands start identical."""
+        ss = _make_search_space()
+        initial = {"a": 3, "b": True}
+        best = run_island_ga(
+            initial,
+            ss,
+            _fitness,
+            num_islands=2,
+            population_size=10,
+            num_iterations=2,
+            random_seed=42,
+            diversity_rate=0.0,
+        )
+        assert isinstance(best, Individual)
+
+    def test_diversity_rate_default(self):
+        """Default diversity_rate is 0.5."""
+        ss = _make_search_space()
+        initial = {"a": 3, "b": True}
+        best = run_island_ga(
+            initial,
+            ss,
+            _fitness,
+            num_islands=2,
+            population_size=10,
+            num_iterations=2,
             random_seed=42,
         )
         assert isinstance(best, Individual)

@@ -1057,6 +1057,50 @@ class TestCmdOptimizeErrorPaths:
                                                 cmd_optimize(args)
                                                 mock_phased.assert_called_once()
 
+    def test_iterative_optimizer_runs(self):
+        import argparse
+
+        from main import cmd_optimize
+
+        args = argparse.Namespace(
+            repo_path="/tmp",
+            debug=False,
+            start_config_file=None,
+            dry_run=False,
+            no_analyze=True,
+            option_values_json_file=None,
+            forced_options_yaml_file=None,
+            output_file=None,
+            optimizer="iterative",
+            ng_budget=10,
+            islands=1,
+            population_size=4,
+            file_sample_percentage=100.0,
+            jobs=1,
+        )
+        with patch("main.os.path.isdir", return_value=True):
+            with patch("main.get_clang_format_options", return_value="output"):
+                with patch(
+                    "main.parse_clang_format_options", return_value=mock_options_info()
+                ):
+                    with patch("main.build_search_space", return_value=[]):
+                        with patch("main.run_iterative_optimization") as mock_iter:
+                            from unittest.mock import MagicMock
+
+                            mock_result = MagicMock()
+                            mock_result.best_config = {}
+                            mock_iter.return_value = mock_result
+                            with patch("main.tempfile.mkdtemp"):
+                                with patch("main.shutil.copytree"):
+                                    with patch("main.run_command"):
+                                        with patch(
+                                            "main.generate_clang_format_config",
+                                            return_value="",
+                                        ):
+                                            with patch("main.shutil.rmtree"):
+                                                cmd_optimize(args)
+                                                mock_iter.assert_called_once()
+
     def test_unknown_optimizer_exits(self):
         import argparse
 
@@ -1554,3 +1598,46 @@ class TestWarnUnusedPhasedFlags:
         captured = capsys.readouterr()
         assert "ignores" in captured.err
         assert "--iterations" in captured.err
+
+    def test_main_path_calls_warn_for_iterative(self, capsys, monkeypatch):
+        """Ensure main() invokes _warn_unused_phased_flags when --optimizer iterative."""
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "main.py",
+                "optimize",
+                "--optimizer",
+                "iterative",
+                "--iterations",
+                "200",
+                "/tmp/fake",
+            ],
+        )
+        from main import main
+
+        with patch("main.cmd_optimize") as mock_optimize:
+            mock_optimize.side_effect = SystemExit(0)
+            try:
+                main()
+            except SystemExit:
+                pass
+        captured = capsys.readouterr()
+        assert "ignores" in captured.err
+        assert "iterative" in captured.err
+        assert "--iterations" in captured.err
+
+    def test_warning_uses_correct_optimizer_name(self, capsys):
+        """Warning message uses the actual optimizer name, not hardcoded 'phased'."""
+        from main import _warn_unused_phased_flags  # pyright: ignore[reportPrivateUsage]
+
+        import argparse
+
+        args = argparse.Namespace(
+            optimizer="iterative",
+            iterations=200,
+        )
+        _warn_unused_phased_flags(args)
+        captured = capsys.readouterr()
+        assert "--optimizer iterative" in captured.err
+        assert "Iterative uses" in captured.err

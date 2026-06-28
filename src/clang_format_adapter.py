@@ -58,6 +58,7 @@ def build_search_space(
 
         # Analysis results: detected conventions are mutable (GA optimizes them).
         # Use the detected value as the seed, but allow mutation to other values.
+        # Exception: penalty options are always fixed — they must be optimized as a group.
         if analysis_results and full_path in analysis_results:
             raw = analysis_results[full_path]
             # Handle both old format (raw values) and new format (DetectedOption).
@@ -72,11 +73,13 @@ def build_search_space(
                     "possible_values", [value]
                 )
             )
+            # Force penalty options to be fixed, even if detected.
+            is_penalty = full_path.startswith("Penalty")
             parameters[full_path] = ParameterDef(
                 name=full_path,
                 param_type=option_info["type"],
                 possible_values=possible_values,
-                fixed=False,
+                fixed=is_penalty,
                 tier=tier,
             )
             continue
@@ -85,13 +88,15 @@ def build_search_space(
         json_info = lookups.json_options_lookup.get(full_path, {})
         json_values = json_info.get("possible_values")
 
-        # Penalty options get curated values regardless of detection.
+        # Penalty options get curated values but start fixed.
+        # They are relative weights that only make sense when optimized together.
+        # The iterative optimizer unlocks them as a group in a final polish step.
         if full_path.startswith("Penalty"):
             parameters[full_path] = ParameterDef(
                 name=full_path,
                 param_type=option_info["type"],
                 possible_values=list(CURATED_PENALTY_VALUES),
-                fixed=False,
+                fixed=True,
                 tier="polish",
             )
             continue
@@ -134,6 +139,7 @@ class FitnessEvaluator:
     _random_seed: int
     _repo_index: int
     _repo_lock: threading.Lock
+    _repo_busy_locks: list[threading.Lock]
 
     def __init__(
         self,
@@ -154,60 +160,75 @@ class FitnessEvaluator:
         self._random_seed = random_seed
         self._repo_index = 0
         self._repo_lock = threading.Lock()
+        self._repo_busy_locks = [threading.Lock() for _ in repo_paths]
 
-    def _get_repo_path(self) -> str:
+    def _get_repo_path(self) -> tuple[str, int]:
         """Select a repo path using round-robin to avoid contention.
 
         Uses a thread-safe counter so each parallel evaluation gets a
-        distinct repo copy. Works for both ThreadPoolExecutor and
-        ProcessPoolExecutor.
+        distinct repo copy. Blocks if the selected repo is still in use
+        by another thread, preventing race conditions on git operations.
+        Works for both ThreadPoolExecutor and ProcessPoolExecutor.
+
+        Returns:
+            Tuple of (repo_path, repo_index) so the caller can release the lock.
         """
         with self._repo_lock:
             idx = self._repo_index % len(self._repo_paths)
             self._repo_index += 1
-        return self._repo_paths[idx]
+        # Acquire the per-repo lock to prevent concurrent access.
+        # This blocks until the repo is free, ensuring no two threads
+        # operate on the same repo simultaneously.
+        _ = self._repo_busy_locks[idx].acquire()
+        return self._repo_paths[idx], idx
 
     def __call__(self, config: dict[str, Any]) -> float:
-        # Start from base template and apply config values
-        flat_options = copy.deepcopy(self._base_options)
+        # Get repo path (acquires per-repo lock to prevent concurrent access)
+        repo_path, repo_idx = self._get_repo_path()
+        try:
+            # Start from base template and apply config values
+            flat_options = copy.deepcopy(self._base_options)
 
-        for name, value in config.items():
-            if name in flat_options:
-                target_type = flat_options[name]["type"]
-                if target_type == "int":
-                    try:
-                        flat_options[name]["value"] = int(value)
-                    except (ValueError, TypeError):
-                        if self._debug:
-                            print(
-                                f"Worker {self._process_id}: Could not convert '{value}' to int for '{name}'. Skipping.",
-                                file=sys.stderr,
-                            )
-                        continue
-                elif target_type == "bool":
-                    flat_options[name]["value"] = bool(value)
-                else:
-                    flat_options[name]["value"] = value
+            for name, value in config.items():
+                if name in flat_options:
+                    target_type = flat_options[name]["type"]
+                    if target_type == "int":
+                        try:
+                            flat_options[name]["value"] = int(value)
+                        except (ValueError, TypeError):
+                            if self._debug:
+                                print(
+                                    f"Worker {self._process_id}: Could not convert '{value}' to int for '{name}'. Skipping.",
+                                    file=sys.stderr,
+                                )
+                            continue
+                    elif target_type == "bool":
+                        flat_options[name]["value"] = bool(value)
+                    else:
+                        flat_options[name]["value"] = value
 
-        # Apply forced options
-        for forced_path, forced_value in self._forced_options_lookup.items():
-            if forced_path in flat_options:
-                flat_options[forced_path]["value"] = forced_value
+            # Apply forced options
+            for forced_path, forced_value in self._forced_options_lookup.items():
+                if forced_path in flat_options:
+                    flat_options[forced_path]["value"] = forced_value
 
-        config_string = generate_clang_format_config(flat_options)
+            config_string = generate_clang_format_config(flat_options)
 
-        changes = run_clang_format_and_count_changes(
-            config_string,
-            repo_path=self._get_repo_path(),
-            process_id=self._process_id,
-            debug=self._debug,
-            file_sample_percentage=self._file_sample_percentage,
-            random_seed=self._random_seed,
-        )
+            changes = run_clang_format_and_count_changes(
+                config_string,
+                repo_path=repo_path,
+                process_id=self._process_id,
+                debug=self._debug,
+                file_sample_percentage=self._file_sample_percentage,
+                random_seed=self._random_seed,
+            )
 
-        if changes == -1:
-            return float("inf")
-        return changes
+            if changes == -1:
+                return float("inf")
+            return changes
+        finally:
+            # Release the per-repo lock so other threads can use this repo
+            self._repo_busy_locks[repo_idx].release()
 
 
 def make_fitness_function(

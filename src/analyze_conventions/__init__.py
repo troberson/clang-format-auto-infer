@@ -31,7 +31,7 @@ from .style import (
     detect_trailing_comment_style,
 )
 from .analyzer import DetectedOption, analyze, analyze_with_metadata
-from .impact import measure_impact
+from .impact import ImpactScore, measure_impact, measure_remaining_impact
 
 __all__ = [
     "_source_files",
@@ -57,5 +57,7 @@ __all__ = [
     "detect_sort_includes",
     "detect_trailing_comment_style",
     "detect_use_tab",
+    "ImpactScore",
     "measure_impact",
+    "measure_remaining_impact",
 ]

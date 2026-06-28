@@ -143,9 +143,13 @@ python3 main.py <repo_path> [OPTIONS]
   that should be forced to a specific value (e.g., `data/forced.yml`).
 - `-d`, `--debug`: Enable debug output, showing commands being executed and
   more verbose information.
-- `--optimizer {genetic|nevergrad}`: Choose the optimization algorithm.
-  `genetic` (default) uses a genetic algorithm with an island model.
-  `nevergrad` uses Nevergrad's black-box optimization algorithms.
+- `--optimizer {genetic|nevergrad|phased|iterative}`: Choose the optimization
+  algorithm. `genetic` (default) uses a genetic algorithm with an island model.
+  `nevergrad` uses Nevergrad's black-box optimization algorithms. `phased` runs
+  a multi-phase optimizer that separates high-impact structural options from
+  low-impact polish options. `iterative` starts with analyzer-detected options
+  and empirically discovers which remaining options are most impactful, unlocking
+  them in batches until convergence.
 - `--iterations <int>`: **[Genetic Algorithm]** Number of generations for the
   genetic algorithm (default: `100`). More iterations can lead to better results
   but take longer.
@@ -164,11 +168,15 @@ python3 main.py <repo_path> [OPTIONS]
   iterations (default: `0`, disabled).
 - `--checkpoint-resume <file_path>`: **[Genetic Algorithm]** Resume optimization
   from a checkpoint file.
-- `--ng-budget <int>`: **[Nevergrad]** Total number of evaluations (budget) for
-  the Nevergrad optimizer (default: `1000`).
+- `--ng-budget <int>`: **[Nevergrad/Phased/Iterative]** Total number of
+  evaluations (budget) for the optimizer (default: `1000`).
 - `--ng-optimizer <str>`: **[Nevergrad]** Name of the Nevergrad optimizer to
   use (e.g., `OnePlusOne`, `CMA`, `DE`, `PSO`). See Nevergrad documentation for
   available optimizers.
+- `--max-restarts <int>`: **[Phased]** Maximum restarts per phase on stagnation
+  (default: `1`).
+- `--impact-budget <int>`: **[Phased/Iterative]** Evaluation budget for empirical
+  impact measurement (default: `50`).
 - `-j`, `--jobs <int>`: Number of parallel jobs to run for fitness calculation
   (default: `1`). Each job will operate on a separate temporary copy of your
   repository. Increase this to utilize more CPU cores. For the `nevergrad`
@@ -275,6 +283,42 @@ python3 main.py /home/user/my_project \
     --jobs 8 \
     --file-sample-percentage 50.0
 ```
+
+### Example Usage (Phased)
+
+To optimize using the phased optimizer, which separates high-impact structural
+options from low-impact polish options:
+
+```sh
+python3 main.py /home/user/my_project \
+    --optimizer phased \
+    --option-values-json data/clang-format-values.json \
+    --forced-options-yaml data/forced.yml \
+    --ng-budget 500 \
+    --impact-budget 100 \
+    --output optimized.clang-format \
+    --jobs 4
+```
+
+### Example Usage (Iterative)
+
+To optimize using the iterative optimizer, which starts with analyzer-detected
+options and empirically discovers which remaining options are most impactful:
+
+```sh
+python3 main.py /home/user/my_project \
+    --optimizer iterative \
+    --option-values-json data/clang-format-values.json \
+    --forced-options-yaml data/forced.yml \
+    --ng-budget 500 \
+    --impact-budget 100 \
+    --output optimized.clang-format \
+    --jobs 4
+```
+
+The iterative optimizer is designed to be more automatic than phased: it
+handles option discovery and tiering internally, requiring fewer explicit
+parameters.
 
 ## Contributing
 
