@@ -38,6 +38,16 @@ def load_json_option_values(file_path):
             json_options_lookup = {
                 item["name"]: item for item in json_list if "name" in item
             }
+
+            # Language: "None" is a valid clang-format enum value but means
+            # "do not use" — it disables language detection and should never
+            # be selected by the optimizer.
+            if "Language" in json_options_lookup:
+                values = json_options_lookup["Language"].get("possible_values")
+                if values and "None" in values:
+                    json_options_lookup["Language"]["possible_values"] = [
+                        v for v in values if v != "None"
+                    ]
         print(f"Successfully loaded option values from '{file_path}'.", file=sys.stderr)
         return json_options_lookup
     except json.JSONDecodeError as e:

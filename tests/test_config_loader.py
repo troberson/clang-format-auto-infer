@@ -56,6 +56,49 @@ class TestLoadJsonOptionValues:
         assert "ValidOption" in result
         assert len(result) == 1
 
+    def test_language_none_value_removed(self, tmp_path):
+        """Language: None is a valid clang-format enum but means 'do not use'.
+        It should be stripped from possible_values so the optimizer never selects it."""
+        data = [
+            {
+                "name": "Language",
+                "type": "LanguageKind",
+                "possible_values": ["None", "C", "Cpp"],
+            },
+        ]
+        f = tmp_path / "values.json"
+        f.write_text(json.dumps(data))
+        result = load_json_option_values(str(f))
+        assert result["Language"]["possible_values"] == ["C", "Cpp"]
+
+    def test_language_without_none_unchanged(self, tmp_path):
+        """When Language has no 'None' value, leave it as-is."""
+        data = [
+            {
+                "name": "Language",
+                "type": "LanguageKind",
+                "possible_values": ["C", "Cpp"],
+            },
+        ]
+        f = tmp_path / "values.json"
+        f.write_text(json.dumps(data))
+        result = load_json_option_values(str(f))
+        assert result["Language"]["possible_values"] == ["C", "Cpp"]
+
+    def test_language_null_possible_values_unchanged(self, tmp_path):
+        """When Language has null possible_values, don't crash."""
+        data = [
+            {
+                "name": "Language",
+                "type": "LanguageKind",
+                "possible_values": None,
+            },
+        ]
+        f = tmp_path / "values.json"
+        f.write_text(json.dumps(data))
+        result = load_json_option_values(str(f))
+        assert result["Language"]["possible_values"] is None
+
 
 class TestLoadForcedOptions:
     def test_valid_yaml_flat(self, tmp_path):
