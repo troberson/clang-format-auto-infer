@@ -7,9 +7,9 @@ No domain-specific dependencies. The caller provides:
 
 from __future__ import annotations
 
+import concurrent.futures
 import copy
 import random
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable
 
 from ..utils import dbg
@@ -373,18 +373,21 @@ def run_island_ga(  # noqa: PLR0913
     ]
     no_improve_count = 0
 
-    for iteration in range(num_iterations):
-        prev_best = best_overall.fitness
+    max_workers = min(num_workers, num_islands)
+    executor: concurrent.futures.ThreadPoolExecutor | None = None
+    if max_workers > 1:
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
 
-        # Seed per-island RNGs from the main RNG to ensure deterministic behavior.
-        # Each island gets its own RNG instance to avoid thread-safety issues.
-        island_seeds = [rng.random() for _ in range(num_islands)]
-        island_rngs = [random.Random(s) for s in island_seeds]
+    try:
+        for iteration in range(num_iterations):
+            prev_best = best_overall.fitness
 
-        # Evolve islands in parallel using ThreadPoolExecutor.
-        max_workers = min(num_workers, num_islands)
-        if max_workers > 1:
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Seed per-island RNGs from the main RNG to ensure deterministic behavior.
+            # Each island gets its own RNG instance to avoid thread-safety issues.
+            island_seeds = [rng.random() for _ in range(num_islands)]
+            island_rngs = [random.Random(s) for s in island_seeds]
+
+            if executor is not None:
                 futures = {
                     executor.submit(
                         _evolve_island_task,
@@ -400,7 +403,7 @@ def run_island_ga(  # noqa: PLR0913
                     for i, pop in enumerate(populations)
                 }
                 results = []
-                for future in as_completed(futures):
+                for future in concurrent.futures.as_completed(futures):
                     results.append(future.result())
 
                 # Update populations and track best
@@ -413,78 +416,83 @@ def run_island_ga(  # noqa: PLR0913
                             config=copy.deepcopy(best_in_island.config),
                             fitness=best_in_island.fitness,
                         )
-        else:
-            # Sequential execution (original behavior)
-            for i, pop in enumerate(populations):
-                new_pop = evolve_island_generation(
-                    pop,
-                    island_size,
-                    search_space,
-                    fitness_fn,
-                    island_rngs[i],
-                    debug,
-                    tag,
-                )
-                populations[i] = new_pop
-
-                best_in_island = min(new_pop, key=lambda ind: ind.fitness)
-                fitness_history[i].append(best_in_island.fitness)
-
-                if best_in_island.fitness < best_overall.fitness:
-                    best_overall = Individual(
-                        config=copy.deepcopy(best_in_island.config),
-                        fitness=best_in_island.fitness,
+            else:
+                # Sequential execution
+                for i, pop in enumerate(populations):
+                    new_pop = evolve_island_generation(
+                        pop,
+                        island_size,
+                        search_space,
+                        fitness_fn,
+                        island_rngs[i],
+                        debug,
+                        tag,
                     )
+                    populations[i] = new_pop
 
-        # Convergence detection
-        if best_overall.fitness == prev_best:
-            no_improve_count += 1
-        else:
-            improvement = (prev_best - best_overall.fitness) / max(abs(prev_best), 1)
-            if improvement < min_improvement_ratio:
+                    best_in_island = min(new_pop, key=lambda ind: ind.fitness)
+                    fitness_history[i].append(best_in_island.fitness)
+
+                    if best_in_island.fitness < best_overall.fitness:
+                        best_overall = Individual(
+                            config=copy.deepcopy(best_in_island.config),
+                            fitness=best_in_island.fitness,
+                        )
+
+            # Convergence detection
+            if best_overall.fitness == prev_best:
                 no_improve_count += 1
             else:
-                no_improve_count = 0
+                improvement = (prev_best - best_overall.fitness) / max(
+                    abs(prev_best), 1
+                )
+                if improvement < min_improvement_ratio:
+                    no_improve_count += 1
+                else:
+                    no_improve_count = 0
 
-        # Single compact debug line per iteration: stage, iteration, fitness, convergence.
-        if debug:
-            conv_str = (
-                f" conv {no_improve_count}/{convergence_threshold}"
-                if convergence_threshold is not None
-                else ""
-            )
-            dbg(
-                tag,
-                f"Iter {iteration + 1} fitness={best_overall.fitness}{conv_str}",
-                summary=True,
-            )
-
-        # Early termination on perfect fitness
-        if best_overall.fitness == 0:
-            break
-
-        if (
-            convergence_threshold is not None
-            and no_improve_count >= convergence_threshold
-        ):
+            # Single compact debug line per iteration: stage, iteration, fitness, convergence.
             if debug:
-                dbg(tag, f"Converged after {iteration + 1} iterations.")
-            break
+                conv_str = (
+                    f" conv {no_improve_count}/{convergence_threshold}"
+                    if convergence_threshold is not None
+                    else ""
+                )
+                dbg(
+                    tag,
+                    f"Iter {iteration + 1} fitness={best_overall.fitness}{conv_str}",
+                    summary=True,
+                )
 
-        # Migration
-        if num_islands > 1 and (iteration + 1) % migration_interval == 0:
-            perform_migration(populations, rng, debug)
+            # Early termination on perfect fitness
+            if best_overall.fitness == 0:
+                break
 
-            # Re-check overall best after migration
-            all_inds = [ind for pop in populations for ind in pop]
-            if all_inds:
-                post_migration_best = min(all_inds, key=lambda ind: ind.fitness)
-                if (
-                    post_migration_best.fitness < best_overall.fitness
-                ):  # pragma: no cover - migration only moves existing individuals; best_overall already tracks global minimum
-                    best_overall = Individual(
-                        config=copy.deepcopy(post_migration_best.config),
-                        fitness=post_migration_best.fitness,
-                    )
+            if (
+                convergence_threshold is not None
+                and no_improve_count >= convergence_threshold
+            ):
+                if debug:
+                    dbg(tag, f"Converged after {iteration + 1} iterations.")
+                break
+
+            # Migration
+            if num_islands > 1 and (iteration + 1) % migration_interval == 0:
+                perform_migration(populations, rng, debug)
+
+                # Re-check overall best after migration
+                all_inds = [ind for pop in populations for ind in pop]
+                if all_inds:
+                    post_migration_best = min(all_inds, key=lambda ind: ind.fitness)
+                    if (
+                        post_migration_best.fitness < best_overall.fitness
+                    ):  # pragma: no cover - migration only moves existing individuals; best_overall already tracks global minimum
+                        best_overall = Individual(
+                            config=copy.deepcopy(post_migration_best.config),
+                            fitness=post_migration_best.fitness,
+                        )
+    finally:
+        if executor:
+            executor.shutdown(wait=True)
 
     return best_overall
