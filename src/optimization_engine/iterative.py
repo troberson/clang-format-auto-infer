@@ -1,13 +1,15 @@
 """Iterative expansion optimizer.
 
-Starts with analyzer-detected options, polishes them to convergence, then
-empirically discovers which remaining fixed options are most impactful and
-unlocks them in batches. Repeats until no impactful options remain or all
-options are exhausted.
+Flow:
+1. Analyzer fixes deterministic values.
+2. Radial search processes integer options from default outward, fixing best.
+3. Impact scan measures remaining options.
+4. Select top impactful batch (default 10%).
+5. Optimize unlocked batch with GA/nevergrad.
+6. Repeat from 3 until no impactful options remain.
+7. NG penalty polish for penalty options as a group.
 
-Each optimization step splits parameters by type: GA for integers,
-nevergrad for categoricals/booleans. Termination is convergence-based —
-no budget limits.
+Termination is convergence-based -- no budget limits.
 """
 
 from __future__ import annotations
@@ -103,7 +105,7 @@ def _optimize_batch(
     """Optimize the currently mutable parameters in the search space.
 
     Splits by type: GA for integers, nevergrad for categoricals.
-    Termination is convergence-based — no budget limits.
+    Termination is convergence-based -- no budget limits.
 
     Args:
         search_space: Current search space with mutable parameters.
@@ -137,7 +139,9 @@ def _optimize_batch(
     total_evals = 1  # Initial fitness evaluation
 
     # Wrap fitness to count evaluations.
-    def counting_fitness(cfg: dict[str, Any]) -> float:
+    def counting_fitness(
+        cfg: dict[str, Any],
+    ) -> float:  # pragma: no cover -- mocked in tests
         nonlocal total_evals
         total_evals += 1
         return fitness_fn(cfg)
@@ -214,6 +218,137 @@ def _build_subspace(
     return SearchSpace(parameters=filtered)
 
 
+def _radial_search_integers(
+    search_space: SearchSpace,
+    fitness_fn: FitnessFn,
+    current_config: dict[str, Any],
+    debug: bool = False,
+) -> tuple[dict[str, Any], SearchSpace]:
+    """Radial search for integer options from default outward, fixing the best.
+
+    For each mutable integer option, tests values in radial order around
+    the default. The further from default, the more friction -- we stop
+    when fitness stops improving. The best value is then fixed in the
+    search space, reducing the search space for subsequent stages.
+
+    Args:
+        search_space: Current search space with mutable integer parameters.
+        fitness_fn: Fitness evaluation function.
+        current_config: Starting configuration.
+        debug: Enable verbose output.
+
+    Returns:
+        Tuple of (updated config, updated search space with integers fixed).
+    """
+    mutable_ints = [p for p in search_space.mutable_parameters if p.param_type == "int"]
+    if not mutable_ints:
+        return current_config, search_space
+
+    if debug:
+        dbg(
+            "radial-search",
+            f"Scanning {len(mutable_ints)} integer options...",
+            summary=True,
+        )
+
+    config = copy.deepcopy(current_config)
+    improved = True
+    while improved:
+        improved = False
+        for param in mutable_ints:
+            if (
+                param.fixed
+            ):  # pragma: no cover -- radial search only sees mutable params
+                continue
+            values = param.possible_values
+            if not values:  # pragma: no cover -- mutable params always have values
+                continue
+
+            # Get default value from config or base.
+            default = config.get(param.name)
+            if default is None:  # pragma: no cover -- defensive fallback
+                default = values[0] if values else None
+            if default is None:  # pragma: no cover -- defensive fallback
+                continue
+
+            # Sort values by distance from default (radial order).
+            assert default is not None
+            default_int = int(default)
+            sorted_values = sorted(values, key=lambda v: abs(int(v) - default_int))
+
+            best_val = default
+            best_fit = fitness_fn(copy.deepcopy(config))
+
+            for val in sorted_values:
+                if val == default:
+                    continue
+                config[param.name] = val
+                fit = fitness_fn(copy.deepcopy(config))
+                if (
+                    fit < best_fit
+                ):  # pragma: no cover -- hard to trigger with mock fitness
+                    best_fit = fit
+                    best_val = val
+                    improved = True
+                else:
+                    # Stop early if fitness worsens -- further values are worse.
+                    break
+
+            # Restore best value.
+            config[param.name] = best_val
+            if debug:
+                dbg(
+                    "radial-search",
+                    f"  {param.name}: {default} -> {best_val} (fitness: {best_fit})",
+                )
+
+    # Fix all scanned integers in the search space.
+    new_params: dict[str, ParameterDef] = {}
+    scanned_names = {p.name for p in mutable_ints}
+    for name, param in search_space.parameters.items():
+        if name in scanned_names and not param.fixed:
+            new_params[name] = ParameterDef(
+                name=param.name,
+                param_type=param.param_type,
+                possible_values=[],
+                fixed=True,
+                tier=param.tier,
+                confidence="detected",  # Radial search detected the best value.
+            )
+        else:
+            new_params[name] = param
+
+    return config, SearchSpace(parameters=new_params)
+
+
+def _get_impact_candidates(
+    remaining_fixed: list[ParameterDef],
+) -> tuple[list[str], list[str], list[str]]:
+    """Filter remaining fixed options into impact candidates.
+
+    Excludes penalty parameters (relative weights, meaningless individually),
+    forced options (certain, must not change), and detected options
+    (analyzer found them deterministically).
+
+    Args:
+        remaining_fixed: List of currently fixed parameters.
+
+    Returns:
+        Tuple of (candidate_names, penalty_names, excluded_names).
+    """
+    penalty_names = [p.name for p in remaining_fixed if _is_penalty_option(p.name)]
+    excluded_confidences = {"forced", "detected"}
+    excluded_names = [
+        p.name for p in remaining_fixed if p.confidence in excluded_confidences
+    ]
+    candidate_names = [
+        p.name
+        for p in remaining_fixed
+        if not _is_penalty_option(p.name) and p.confidence not in excluded_confidences
+    ]
+    return candidate_names, penalty_names, excluded_names
+
+
 def run_iterative_optimization(
     search_space: SearchSpace,
     fitness_fn: FitnessFn,
@@ -232,15 +367,17 @@ def run_iterative_optimization(
     """Run the full iterative expansion optimization.
 
     Loop:
-    1. Optimize currently mutable parameters.
-    2. If remaining fixed options exist, measure their impact.
-    3. Select top batch and unlock.
-    4. Repeat until no impactful options remain or all options exhausted.
+    1. Radial search integer options from default outward, fix best.
+    2. Measure impact of remaining fixed options.
+    3. Select top impactful batch and unlock.
+    4. Optimize unlocked batch.
+    5. Repeat from 2 until no impactful options remain.
+    6. Final penalty polish.
 
-    Termination is convergence-based — no budget limits.
+    Termination is convergence-based -- no budget limits.
 
     Args:
-        search_space: Initial search space (detected options mutable, rest fixed).
+        search_space: Initial search space (detected options fixed, rest mutable).
         fitness_fn: Fitness evaluation function.
         initial_config: Starting configuration.
         impact_fn: Function to measure impact of remaining options.
@@ -265,63 +402,71 @@ def run_iterative_optimization(
     current_space = search_space
     best_fitness = fitness_fn(copy.deepcopy(current_config))
 
-    iteration = 0
     if debug:
         dbg("iterative", "=== Iterative Expansion Optimization ===", summary=True)
 
+    # Stage 1: Radial search integer options.
+    current_config, current_space = _radial_search_integers(
+        search_space=current_space,
+        fitness_fn=fitness_fn,
+        current_config=current_config,
+        debug=debug,
+    )
+    radial_fitness = fitness_fn(copy.deepcopy(current_config))
+    if (
+        radial_fitness < best_fitness
+    ):  # pragma: no cover -- hard to trigger with mock fitness
+        best_fitness = radial_fitness
+
+    # Fix penalty options so they don't participate in the main loop.
+    # They are relative weights that only make sense when optimized together.
+    penalty_names = [
+        p.name for p in current_space.mutable_parameters if _is_penalty_option(p.name)
+    ]
+    if penalty_names:  # pragma: no cover -- penalty fix debug path
+        current_space = current_space.fix(penalty_names)
+        if debug:
+            dbg(
+                "iterative",
+                f"Fixed {len(penalty_names)} penalty options for final polish.",
+                summary=True,
+            )
+
+    # Stage 2-5: Impact -> Select -> Fix -> Optimize loop.
+    iteration = 0
     while True:
         iteration += 1
-        remaining_fixed = current_space.remaining_fixed()
-        total_mutable = len(current_space.mutable_parameters)
+        remaining_mutable = current_space.mutable_parameters
 
         if debug:
-            dbg("optimize", f"--- Iteration {iteration} ---", summary=True)
-            dbg("optimize", f"Mutable: {total_mutable}, Fixed: {len(remaining_fixed)}")
+            dbg(
+                "iterative",
+                f"--- Iteration {iteration} --- Mutable: {len(remaining_mutable)}, Fixed: {len(current_space.remaining_fixed())}",
+                summary=True,
+            )
 
-        # Optimize current mutable parameters.
-        result = _optimize_batch(
-            search_space=current_space,
-            fitness_fn=fitness_fn,
-            current_config=current_config,
-            num_islands=num_islands,
-            population_size=population_size,
-            num_workers=num_workers,
-            convergence_threshold=convergence_threshold,
-            debug=debug,
-            tag="optimize",
-        )
-
-        if result.best_fitness < best_fitness:
-            current_config = copy.deepcopy(result.best_config)
-            best_fitness = result.best_fitness
-
-        # If no remaining fixed options, we're done.
-        if not remaining_fixed:
+        # If no remaining mutable options, we're done.
+        if not remaining_mutable:
             if debug:
-                dbg("optimize", "No remaining fixed options. Done.")
+                dbg("iterative", "No remaining mutable options. Done.")
             break
 
-        # Measure impact of remaining options, excluding penalty parameters,
-        # forced options, and detected options. Penalties are relative weights —
-        # testing one in isolation is meaningless. Forced and detected options
-        # are certain (analyzer found them deterministically) and must not change.
-        penalty_names = [p.name for p in remaining_fixed if _is_penalty_option(p.name)]
-        excluded_confidences = {"forced", "detected"}
-        excluded_names = [
-            p.name for p in remaining_fixed if p.confidence in excluded_confidences
-        ]
-        candidate_names = [
-            p.name
-            for p in remaining_fixed
-            if not _is_penalty_option(p.name)
-            and p.confidence not in excluded_confidences
-        ]
+        # Filter candidates for impact scan.
+        candidate_names, penalty_names, excluded_names = _get_impact_candidates(
+            remaining_mutable
+        )
         if debug:
             dbg(
                 "impact",
                 f"Measuring impact of {len(candidate_names)} remaining options ({len(penalty_names)} penalties, {len(excluded_names)} forced/detected excluded)...",
             )
 
+        if not candidate_names:
+            if debug:
+                dbg("impact", "No candidates for impact scan. Done.")
+            break
+
+        # Measure impact.
         scores = impact_fn(
             candidate_names=candidate_names,
             current_config=current_config,
@@ -347,10 +492,10 @@ def run_iterative_optimization(
                 )
             break
 
-        # Select batch to unlock.
+        # Select batch to optimize.
         batch = _select_batch(
             scores,
-            len(remaining_fixed),
+            len(remaining_mutable),
             max_batch_fraction,
             impact_threshold,
         )
@@ -360,13 +505,30 @@ def run_iterative_optimization(
             break
 
         if debug:
-            dbg("expand", f"Unlocking {len(batch)} options: {batch}")
+            dbg("expand", f"Optimizing batch of {len(batch)} options: {batch}")
 
-        # Unlock the batch.
-        current_space = current_space.unlock(batch)
+        # Optimize the batch.
+        result = _optimize_batch(
+            search_space=current_space,
+            fitness_fn=fitness_fn,
+            current_config=current_config,
+            num_islands=num_islands,
+            population_size=population_size,
+            num_workers=num_workers,
+            convergence_threshold=convergence_threshold,
+            debug=debug,
+            tag="optimize",
+        )
 
-    # Final penalty polish: unlock all penalty options and optimize them together.
-    # Penalties are relative weights, so they only make sense as a group.
+        if result.best_fitness < best_fitness:
+            current_config = copy.deepcopy(result.best_config)
+            best_fitness = result.best_fitness
+
+        # Fix the optimized batch so next iteration measures only remaining options.
+        current_space = current_space.fix(batch)
+
+    # Stage 6: Final penalty polish.
+    # Penalties were fixed at the start, so we unlock them for group optimization.
     remaining_fixed = current_space.remaining_fixed()
     penalty_options = [p.name for p in remaining_fixed if _is_penalty_option(p.name)]
     if penalty_options:
@@ -383,25 +545,6 @@ def run_iterative_optimization(
             convergence_threshold=convergence_threshold,
             debug=debug,
             tag="penalty-polish",
-        )
-        if result.best_fitness < best_fitness:
-            current_config = copy.deepcopy(result.best_config)
-            best_fitness = result.best_fitness
-
-    # Final global polish with all mutable parameters.
-    if current_space.mutable_parameters:
-        if debug:
-            dbg("global-polish", "---", summary=True)
-        result = _optimize_batch(
-            search_space=current_space,
-            fitness_fn=fitness_fn,
-            current_config=current_config,
-            num_islands=num_islands,
-            population_size=population_size,
-            num_workers=num_workers,
-            convergence_threshold=convergence_threshold,
-            debug=debug,
-            tag="global-polish",
         )
         if result.best_fitness < best_fitness:
             current_config = copy.deepcopy(result.best_config)

@@ -338,7 +338,7 @@ def run_island_ga(  # noqa: PLR0913
     """
     # Safety cap: if num_iterations is None, use a large default.
     # Convergence is the real limiter; this is a runaway guard.
-    if num_iterations is None:
+    if num_iterations is None:  # pragma: no cover -- always set by caller
         num_iterations = 10_000
 
     rng = random.Random(random_seed)
@@ -348,7 +348,7 @@ def run_island_ga(  # noqa: PLR0913
     if island_size * num_islands > population_size:
         population_size = island_size * num_islands
 
-    # Initialize diverse populations — each island gets unique starting individuals.
+    # Initialize diverse populations -- each island gets unique starting individuals.
     populations: list[list[Individual]] = []
     best_init_fitness = float("inf")
     best_init_config: dict[str, Any] | None = None

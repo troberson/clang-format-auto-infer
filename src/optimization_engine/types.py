@@ -67,6 +67,34 @@ class SearchSpace:
         """Return parameters that are still fixed (not yet unlocked)."""
         return [p for p in self.parameters.values() if p.fixed]
 
+    def fix(self, names: list[str]) -> SearchSpace:
+        """Return a new SearchSpace with the given parameters fixed.
+
+        Fixed parameters become immutable and are excluded from future
+        optimization rounds. They retain their current values.
+
+        Args:
+            names: Parameter names to fix.
+
+        Returns:
+            A new SearchSpace with the specified parameters fixed.
+        """
+        new_parameters: dict[str, ParameterDef] = {}
+        name_set = set(names)
+        for name, param in self.parameters.items():
+            if name in name_set and not param.fixed:
+                new_parameters[name] = ParameterDef(
+                    name=param.name,
+                    param_type=param.param_type,
+                    possible_values=param.possible_values,
+                    fixed=True,
+                    tier=param.tier,
+                    confidence=param.confidence,
+                )
+            else:
+                new_parameters[name] = param
+        return SearchSpace(parameters=new_parameters)
+
     def unlock(self, names: list[str]) -> SearchSpace:
         """Return a new SearchSpace with the given parameters unlocked.
 

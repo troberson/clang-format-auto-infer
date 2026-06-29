@@ -27,13 +27,14 @@ class FakeImpactScore:
 def _make_search_space(
     detected: list[str] | None = None,
     fixed: list[str] | None = None,
+    param_type: str = "int",
 ) -> SearchSpace:
     """Build a search space with some mutable and some fixed params."""
     params: dict[str, ParameterDef] = {}
     for name in detected or []:
         params[name] = ParameterDef(
             name=name,
-            param_type="int",
+            param_type=param_type,
             possible_values=[1, 2, 4],
             fixed=False,
             tier="polish",
@@ -41,7 +42,7 @@ def _make_search_space(
     for name in fixed or []:
         params[name] = ParameterDef(
             name=name,
-            param_type="int",
+            param_type=param_type,
             possible_values=[1, 2, 4],
             fixed=True,
             tier="polish",
@@ -96,7 +97,7 @@ class TestRunIterativeOptimization:
         return impact
 
     def test_optimizes_detected_then_stops(self):
-        """When no remaining fixed options, just optimize and stop."""
+        """When no remaining fixed options, radial search fixes all, then stops."""
         space = _make_search_space(detected=["A", "B"], fixed=[])
         fitness = self._make_fitness(500.0)
         impact_fn = self._make_impact_fn([])
@@ -111,12 +112,25 @@ class TestRunIterativeOptimization:
         )
 
         assert result.best_fitness == 500.0
-        # Impact should not be called since no fixed params.
+        # Radial search fixes A and B (both ints). No remaining fixed candidates.
+        # Impact should not be called since all are detected (excluded).
         impact_fn.assert_not_called()
 
     def test_stops_when_no_impactful_options(self):
         """When impact measurement returns no scores, stop."""
-        space = _make_search_space(detected=["A"], fixed=["X", "Y"])
+        # X and Y are mutable str (impact measures them). A is mutable int (radial fixes it).
+        params = {
+            "A": ParameterDef(
+                name="A", param_type="int", possible_values=[1, 2, 4], fixed=False
+            ),
+            "X": ParameterDef(
+                name="X", param_type="str", possible_values=["a", "b"], fixed=False
+            ),
+            "Y": ParameterDef(
+                name="Y", param_type="str", possible_values=["c", "d"], fixed=False
+            ),
+        }
+        space = SearchSpace(parameters=params)
         fitness = self._make_fitness(500.0)
         impact_fn = self._make_impact_fn([])
 
@@ -133,14 +147,26 @@ class TestRunIterativeOptimization:
         impact_fn.assert_called_once()
 
     def test_unlocks_impactful_options(self):
-        """When impactful options found, unlock them and continue."""
-        space = _make_search_space(detected=["A"], fixed=["X", "Y"])
+        """When impactful options found, optimize them and continue."""
+        # X and Y are mutable str (impact measures them). A is mutable int (radial fixes it).
+        params = {
+            "A": ParameterDef(
+                name="A", param_type="int", possible_values=[1, 2, 4], fixed=False
+            ),
+            "X": ParameterDef(
+                name="X", param_type="str", possible_values=["a", "b"], fixed=False
+            ),
+            "Y": ParameterDef(
+                name="Y", param_type="str", possible_values=["c", "d"], fixed=False
+            ),
+        }
+        space = SearchSpace(parameters=params)
         fitness = self._make_fitness(500.0)
-        # First call returns impactful, second returns empty.
+        # First call returns impactful, second returns empty (no remaining candidates).
         impact_fn = MagicMock()
         impact_fn.side_effect = [
             [FakeImpactScore("X", 100.0), FakeImpactScore("Y", 10.0)],
-            [],
+            [],  # No remaining candidates.
         ]
 
         with patch("src.optimization_engine.iterative._optimize_batch") as mock_opt:
@@ -162,8 +188,17 @@ class TestRunIterativeOptimization:
 
     def test_stops_when_impact_below_threshold(self):
         """When top impact is below min_improvement_ratio of best fitness, stop."""
-        space = _make_search_space(detected=["A"], fixed=["X"])
+        params = {
+            "A": ParameterDef(
+                name="A", param_type="int", possible_values=[1, 2, 4], fixed=False
+            ),
+            "X": ParameterDef(
+                name="X", param_type="str", possible_values=["a", "b"], fixed=False
+            ),
+        }
+        space = SearchSpace(parameters=params)
         fitness = self._make_fitness(500.0)
+        # Radial search fixes A (int). Impact called with X.
         # Impact of 1.0 is below 1% of 500 (which is 5.0).
         impact_fn = self._make_impact_fn([FakeImpactScore("X", 1.0)])
 
@@ -182,8 +217,23 @@ class TestRunIterativeOptimization:
 
     def test_passes_candidate_names_to_impact_fn(self):
         """Impact function receives correct candidate names."""
-        space = _make_search_space(detected=["A"], fixed=["X", "Y", "Z"])
+        params = {
+            "A": ParameterDef(
+                name="A", param_type="int", possible_values=[1, 2, 4], fixed=False
+            ),
+            "X": ParameterDef(
+                name="X", param_type="str", possible_values=["a", "b"], fixed=False
+            ),
+            "Y": ParameterDef(
+                name="Y", param_type="str", possible_values=["c", "d"], fixed=False
+            ),
+            "Z": ParameterDef(
+                name="Z", param_type="str", possible_values=["e", "f"], fixed=False
+            ),
+        }
+        space = SearchSpace(parameters=params)
         fitness = self._make_fitness(500.0)
+        # Radial search fixes A (int). Impact called with X, Y, Z.
         impact_fn = self._make_impact_fn([])
 
         _ = run_iterative_optimization(
@@ -201,14 +251,23 @@ class TestRunIterativeOptimization:
 
     def test_passes_current_config_to_impact_fn(self):
         """Impact function receives the current best config."""
-        space = _make_search_space(detected=["A"], fixed=["X"])
+        params = {
+            "A": ParameterDef(
+                name="A", param_type="int", possible_values=[1, 2, 4], fixed=False
+            ),
+            "X": ParameterDef(
+                name="X", param_type="str", possible_values=["a", "b"], fixed=False
+            ),
+        }
+        space = SearchSpace(parameters=params)
         fitness = self._make_fitness(500.0)
+        # Radial search fixes A (int). Impact called with X.
         impact_fn = self._make_impact_fn([])
 
         _ = run_iterative_optimization(
             search_space=space,
             fitness_fn=fitness,
-            initial_config={"A": 4, "X": 2},
+            initial_config={"A": 4, "X": "a"},
             impact_fn=impact_fn,
             impact_kwargs={},
             debug=False,
@@ -232,22 +291,27 @@ class TestRunIterativeOptimization:
 
     def test_convergence_threshold_passed_to_optimize_batch(self):
         """run_iterative_optimization forwards convergence_threshold to _optimize_batch."""
-        space = _make_search_space(detected=["A"], fixed=[])
+        params = {
+            "A": ParameterDef(
+                name="A", param_type="str", possible_values=["x", "y"], fixed=False
+            ),
+        }
+        space = SearchSpace(parameters=params)
         fitness = self._make_fitness(500.0)
-        impact_fn = self._make_impact_fn([])
+        impact_fn = self._make_impact_fn([FakeImpactScore("A", 100.0)])
 
         with patch("src.optimization_engine.iterative._optimize_batch") as mock_opt:
             from src.optimization_engine.types import OptimizationResult
 
             mock_opt.return_value = OptimizationResult(
-                best_config={"A": 2},
+                best_config={"A": "y"},
                 best_fitness=400.0,
                 evaluations_used=10,
             )
             _ = run_iterative_optimization(
                 search_space=space,
                 fitness_fn=fitness,
-                initial_config={"A": 1},
+                initial_config={"A": "x"},
                 impact_fn=impact_fn,
                 impact_kwargs={},
                 convergence_threshold=25,
@@ -559,11 +623,18 @@ class TestIterativeDebugPaths:
 
     def test_fitness_improvement_updates_config(self):
         """When optimization improves fitness, config is updated."""
-        space = _make_search_space(detected=["A"], fixed=["X"])
+        params = {
+            "A": ParameterDef(
+                name="A", param_type="int", possible_values=[1, 2, 4], fixed=False
+            ),
+            "X": ParameterDef(
+                name="X", param_type="str", possible_values=["a", "b"], fixed=False
+            ),
+        }
+        space = SearchSpace(parameters=params)
         fitness = MagicMock()
         fitness.return_value = 500.0
-        # Impact returns empty, so loop stops after first iteration.
-        # The _optimize_batch mock will return improved fitness.
+        # Radial search fixes A (int). Impact called with X, returns empty.
         impact_fn = MagicMock(return_value=[])
 
         with patch("src.optimization_engine.iterative._optimize_batch") as mock_opt:
@@ -578,18 +649,27 @@ class TestIterativeDebugPaths:
                 impact_kwargs={},
                 debug=False,
             )
-            # fitness improvement path
-            assert result.best_fitness == 400.0
-            assert result.best_config["A"] == 2
+            # No _optimize_batch calls in the main loop (impact returns empty).
+            assert result.best_fitness == 500.0
+            assert mock_opt.call_count == 0
 
     def test_debug_prints_no_batch_selected(self):
         """Debug prints when _select_batch returns empty."""
         import io
         import sys
 
-        space = _make_search_space(detected=["A"], fixed=["X"])
+        params = {
+            "A": ParameterDef(
+                name="A", param_type="int", possible_values=[1, 2, 4], fixed=False
+            ),
+            "X": ParameterDef(
+                name="X", param_type="str", possible_values=["a", "b"], fixed=False
+            ),
+        }
+        space = SearchSpace(parameters=params)
         fitness = MagicMock()
         fitness.return_value = 500.0
+        # Radial search fixes A (int). Impact called with X.
         # Score is high enough to pass improvement threshold, but
         # impact_threshold=2.0 means no score can pass (threshold > max_score).
         impact_fn = MagicMock(return_value=[FakeImpactScore("X", 100.0)])
@@ -613,13 +693,25 @@ class TestIterativeDebugPaths:
         assert "No options selected for batch" in output
 
     def test_debug_prints_unlocking(self):
-        """Debug prints when options are unlocked."""
+        """Debug prints when options are optimized."""
         import io
         import sys
 
-        space = _make_search_space(detected=["A"], fixed=["X", "Y"])
+        params = {
+            "A": ParameterDef(
+                name="A", param_type="int", possible_values=[1, 2, 4], fixed=False
+            ),
+            "X": ParameterDef(
+                name="X", param_type="str", possible_values=["a", "b"], fixed=False
+            ),
+            "Y": ParameterDef(
+                name="Y", param_type="str", possible_values=["c", "d"], fixed=False
+            ),
+        }
+        space = SearchSpace(parameters=params)
         fitness = MagicMock()
         fitness.return_value = 500.0
+        # Radial search fixes A (int). Impact called with X, Y.
         # First call: impactful, second: empty (to stop).
         impact_fn = MagicMock()
         impact_fn.side_effect = [
@@ -642,48 +734,67 @@ class TestIterativeDebugPaths:
             output = sys.stderr.getvalue()
             sys.stderr = old_stderr
 
-        assert "Unlocking" in output
+        assert "Optimizing batch" in output
 
     def test_final_polish_improvement(self):
-        """Final polish can improve fitness after loop exits."""
-        space = _make_search_space(detected=["A"], fixed=["X"])
+        """Penalty polish can improve fitness after loop exits."""
+        params = {
+            "A": ParameterDef(
+                name="A",
+                param_type="int",
+                possible_values=[1, 2, 4],
+                fixed=False,
+            ),
+            "PenaltyBreakAssignment": ParameterDef(
+                name="PenaltyBreakAssignment",
+                param_type="int",
+                possible_values=[1, 2],
+                fixed=False,  # Mutable, fixed at start of loop.
+            ),
+        }
+        space = SearchSpace(parameters=params)
         fitness = MagicMock()
         fitness.return_value = 500.0
+        # Radial search fixes A (int). Penalty fixed at start. Impact has no candidates.
         impact_fn = MagicMock(return_value=[])
 
         with patch("src.optimization_engine.iterative._optimize_batch") as mock_opt:
-            # First call (main loop): no improvement.
-            # Second call (final polish): improvement.
+            # Penalty polish call.
             mock_opt.side_effect = [
                 MagicMock(
-                    best_fitness=500.0, best_config={"A": 1}, evaluations_used=10
-                ),
-                MagicMock(
                     best_fitness=350.0,
-                    best_config={"A": 3, "X": 2},
+                    best_config={"A": 3, "PenaltyBreakAssignment": 2},
                     evaluations_used=5,
                 ),
             ]
             result = run_iterative_optimization(
                 search_space=space,
                 fitness_fn=fitness,
-                initial_config={"A": 1},
+                initial_config={"A": 1, "PenaltyBreakAssignment": 1},
                 impact_fn=impact_fn,
                 impact_kwargs={},
                 debug=False,
             )
-            # final polish improvement path
             assert result.best_fitness == 350.0
-            assert mock_opt.call_count == 2
+            assert mock_opt.call_count == 1
 
     def test_debug_prints_iteration_header(self):
         """Debug mode prints iteration headers."""
         import io
         import sys
 
-        space = _make_search_space(detected=["A"], fixed=["X"])
+        params = {
+            "A": ParameterDef(
+                name="A", param_type="int", possible_values=[1, 2, 4], fixed=False
+            ),
+            "X": ParameterDef(
+                name="X", param_type="str", possible_values=["a", "b"], fixed=False
+            ),
+        }
+        space = SearchSpace(parameters=params)
         fitness = MagicMock()
         fitness.return_value = 500.0
+        # Radial search fixes A (int). Impact called with X.
         impact_fn = MagicMock(return_value=[])
 
         old_stderr = sys.stderr
@@ -704,14 +815,74 @@ class TestIterativeDebugPaths:
         assert "Iterative Expansion Optimization" in output
         assert "Iteration 1" in output
 
-    def test_debug_prints_no_remaining_fixed(self):
-        """Debug prints 'No remaining fixed options' when done."""
+    def test_debug_prints_no_remaining_mutable(self):
+        """Debug prints 'No remaining mutable options' when done."""
         import io
         import sys
 
-        space = _make_search_space(detected=["A"], fixed=[])
+        # Use non-int params so radial search doesn't fix them.
+        # Impact returns a score, batch is optimized, then fixed.
+        # Next iteration: no mutable left.
+        params = {
+            "A": ParameterDef(
+                name="A",
+                param_type="str",
+                possible_values=["x", "y"],
+                fixed=False,
+            ),
+        }
+        space = SearchSpace(parameters=params)
         fitness = MagicMock()
         fitness.return_value = 500.0
+
+        impact_fn = MagicMock(return_value=[FakeImpactScore("A", 100.0)])
+
+        old_stderr = sys.stderr
+        sys.stderr = io.StringIO()
+        try:
+            with patch("src.optimization_engine.iterative._optimize_batch") as mock_opt:
+                mock_opt.return_value = MagicMock(
+                    best_fitness=500.0, best_config={"A": "x"}, evaluations_used=5
+                )
+                _ = run_iterative_optimization(
+                    search_space=space,
+                    fitness_fn=fitness,
+                    initial_config={"A": "x"},
+                    impact_fn=impact_fn,
+                    impact_kwargs={},
+                    debug=True,
+                )
+        finally:
+            output = sys.stderr.getvalue()
+            sys.stderr = old_stderr
+
+        assert "No remaining mutable options" in output
+
+    def test_debug_prints_no_candidates_for_impact_scan(self):
+        """Debug prints 'No candidates for impact scan' when all mutable are excluded."""
+        import io
+        import sys
+
+        # All mutable params have confidence="detected", so they're excluded from impact.
+        params = {
+            "A": ParameterDef(
+                name="A",
+                param_type="str",
+                possible_values=["x", "y"],
+                fixed=False,
+                confidence="detected",
+            ),
+            "B": ParameterDef(
+                name="B",
+                param_type="str",
+                possible_values=["a", "b"],
+                fixed=False,
+                confidence="detected",
+            ),
+        }
+        space = SearchSpace(parameters=params)
+        fitness = MagicMock(return_value=500.0)
+        impact_fn = MagicMock(return_value=[])
 
         old_stderr = sys.stderr
         sys.stderr = io.StringIO()
@@ -719,8 +890,8 @@ class TestIterativeDebugPaths:
             _ = run_iterative_optimization(
                 search_space=space,
                 fitness_fn=fitness,
-                initial_config={"A": 1},
-                impact_fn=MagicMock(),
+                initial_config={"A": "x", "B": "a"},
+                impact_fn=impact_fn,
                 impact_kwargs={},
                 debug=True,
             )
@@ -728,16 +899,26 @@ class TestIterativeDebugPaths:
             output = sys.stderr.getvalue()
             sys.stderr = old_stderr
 
-        assert "No remaining fixed options" in output
+        assert "No candidates for impact scan" in output
+        impact_fn.assert_not_called()
 
     def test_debug_prints_no_impactful_options(self):
         """Debug prints 'No impactful options found' when impact returns empty."""
         import io
         import sys
 
-        space = _make_search_space(detected=["A"], fixed=["X"])
+        params = {
+            "A": ParameterDef(
+                name="A", param_type="int", possible_values=[1, 2, 4], fixed=False
+            ),
+            "X": ParameterDef(
+                name="X", param_type="str", possible_values=["a", "b"], fixed=False
+            ),
+        }
+        space = SearchSpace(parameters=params)
         fitness = MagicMock()
         fitness.return_value = 500.0
+        # Radial search fixes A (int). Impact called with X.
         impact_fn = MagicMock(return_value=[])
 
         old_stderr = sys.stderr
@@ -762,9 +943,18 @@ class TestIterativeDebugPaths:
         import io
         import sys
 
-        space = _make_search_space(detected=["A"], fixed=["X"])
+        params = {
+            "A": ParameterDef(
+                name="A", param_type="int", possible_values=[1, 2, 4], fixed=False
+            ),
+            "X": ParameterDef(
+                name="X", param_type="str", possible_values=["a", "b"], fixed=False
+            ),
+        }
+        space = SearchSpace(parameters=params)
         fitness = MagicMock()
         fitness.return_value = 500.0
+        # Radial search fixes A (int). Impact called with X.
         impact_fn = MagicMock(return_value=[FakeImpactScore("X", 1.0)])
 
         old_stderr = sys.stderr
@@ -786,13 +976,27 @@ class TestIterativeDebugPaths:
         assert "below threshold" in output
 
     def test_debug_prints_final_polish(self):
-        """Debug prints final polish header."""
+        """Debug prints penalty polish header."""
         import io
         import sys
 
         from unittest.mock import patch
 
-        space = _make_search_space(detected=["A"], fixed=[])
+        params = {
+            "A": ParameterDef(
+                name="A",
+                param_type="int",
+                possible_values=[1, 2, 4],
+                fixed=False,
+            ),
+            "PenaltyBreakAssignment": ParameterDef(
+                name="PenaltyBreakAssignment",
+                param_type="int",
+                possible_values=[1, 2],
+                fixed=False,
+            ),
+        }
+        space = SearchSpace(parameters=params)
         fitness = MagicMock()
         fitness.return_value = 500.0
 
@@ -806,8 +1010,8 @@ class TestIterativeDebugPaths:
                 _ = run_iterative_optimization(
                     search_space=space,
                     fitness_fn=fitness,
-                    initial_config={"A": 1},
-                    impact_fn=MagicMock(),
+                    initial_config={"A": 1, "PenaltyBreakAssignment": 1},
+                    impact_fn=MagicMock(return_value=[]),
                     impact_kwargs={},
                     debug=True,
                 )
@@ -815,7 +1019,7 @@ class TestIterativeDebugPaths:
             output = sys.stderr.getvalue()
             sys.stderr = old_stderr
 
-        assert "[global-polish]" in output
+        assert "[penalty-polish]" in output
 
 
 class TestPenaltyOptions:
@@ -847,17 +1051,19 @@ class TestPenaltyOptions:
                 name="PenaltyBreakAssignment",
                 param_type="int",
                 possible_values=[1, 2],
-                fixed=True,
+                fixed=False,  # Mutable, but will be fixed at start of loop.
             ),
             "ColumnLimit": ParameterDef(
                 name="ColumnLimit",
-                param_type="int",
-                possible_values=[80, 100],
-                fixed=True,
+                param_type="str",
+                possible_values=["80", "100"],
+                fixed=False,
             ),
         }
         space = SearchSpace(parameters=params)
         fitness = MagicMock(return_value=500.0)
+        # Radial search fixes IndentWidth (int). Penalty fixed at start.
+        # Impact called with ColumnLimit only.
         impact_fn = MagicMock(return_value=[])
 
         _ = run_iterative_optimization(
@@ -866,32 +1072,33 @@ class TestPenaltyOptions:
             initial_config={
                 "IndentWidth": 2,
                 "PenaltyBreakAssignment": 1,
-                "ColumnLimit": 80,
+                "ColumnLimit": "80",
             },
             impact_fn=impact_fn,
             impact_kwargs={},
             debug=False,
         )
 
-        # Impact fn should be called with only non-penalty candidates.
+        # Impact fn should be called with only non-penalty, non-detected candidates.
         call_kwargs = impact_fn.call_args[1]
         assert "PenaltyBreakAssignment" not in call_kwargs["candidate_names"]
+        assert "IndentWidth" not in call_kwargs["candidate_names"]
         assert "ColumnLimit" in call_kwargs["candidate_names"]
 
     def test_penalty_polish_unlocks_and_optimizes(self):
         """Final penalty polish unlocks penalty options and runs optimizer."""
         params = {
-            "IndentWidth": ParameterDef(
-                name="IndentWidth",
+            "A": ParameterDef(
+                name="A",
                 param_type="int",
-                possible_values=[2, 4],
+                possible_values=[1, 2, 4],
                 fixed=False,
             ),
             "PenaltyBreakAssignment": ParameterDef(
                 name="PenaltyBreakAssignment",
                 param_type="int",
                 possible_values=[1, 2],
-                fixed=True,
+                fixed=False,  # Mutable, fixed at start of loop.
             ),
         }
         space = SearchSpace(parameters=params)
@@ -900,15 +1107,17 @@ class TestPenaltyOptions:
         with patch("src.optimization_engine.iterative._optimize_batch") as mock_opt:
             from src.optimization_engine.types import OptimizationResult
 
+            # Radial search fixes A. Penalty fixed at start. Impact has no candidates.
+            # Only penalty polish calls _optimize_batch.
             mock_opt.return_value = OptimizationResult(
-                best_config={"IndentWidth": 2, "PenaltyBreakAssignment": 2},
+                best_config={"A": 2, "PenaltyBreakAssignment": 2},
                 best_fitness=400.0,
                 evaluations_used=10,
             )
             result = run_iterative_optimization(
                 search_space=space,
                 fitness_fn=fitness,
-                initial_config={"IndentWidth": 2, "PenaltyBreakAssignment": 1},
+                initial_config={"A": 1, "PenaltyBreakAssignment": 1},
                 impact_fn=MagicMock(return_value=[]),
                 impact_kwargs={},
                 debug=False,
@@ -923,17 +1132,17 @@ class TestPenaltyOptions:
         import sys
 
         params = {
-            "IndentWidth": ParameterDef(
-                name="IndentWidth",
+            "A": ParameterDef(
+                name="A",
                 param_type="int",
-                possible_values=[2, 4],
+                possible_values=[1, 2, 4],
                 fixed=False,
             ),
             "PenaltyBreakAssignment": ParameterDef(
                 name="PenaltyBreakAssignment",
                 param_type="int",
                 possible_values=[1, 2],
-                fixed=True,
+                fixed=False,
             ),
         }
         space = SearchSpace(parameters=params)
@@ -945,37 +1154,22 @@ class TestPenaltyOptions:
             with patch("src.optimization_engine.iterative._optimize_batch") as mock_opt:
                 from src.optimization_engine.types import OptimizationResult
 
-                # Two calls: main loop, penalty polish, final global polish.
-                # Main loop returns no improvement.
-                # Penalty polish returns improvement.
-                # Final polish returns no further improvement.
+                # Radial search fixes A. Penalty fixed at start. Impact has no candidates.
+                # Only penalty polish calls _optimize_batch.
                 mock_opt.side_effect = [
                     OptimizationResult(
-                        best_config={"IndentWidth": 2},
-                        best_fitness=500.0,
-                        evaluations_used=5,
-                    ),
-                    OptimizationResult(
                         best_config={
-                            "IndentWidth": 2,
+                            "A": 2,
                             "PenaltyBreakAssignment": 2,
                         },
                         best_fitness=400.0,
                         evaluations_used=10,
                     ),
-                    OptimizationResult(
-                        best_config={
-                            "IndentWidth": 2,
-                            "PenaltyBreakAssignment": 2,
-                        },
-                        best_fitness=400.0,
-                        evaluations_used=5,
-                    ),
                 ]
                 result = run_iterative_optimization(
                     search_space=space,
                     fitness_fn=fitness,
-                    initial_config={"IndentWidth": 2, "PenaltyBreakAssignment": 1},
+                    initial_config={"A": 1, "PenaltyBreakAssignment": 1},
                     impact_fn=MagicMock(return_value=[]),
                     impact_kwargs={},
                     debug=True,
@@ -989,7 +1183,15 @@ class TestPenaltyOptions:
 
     def test_impact_scan_budget_not_passed_to_impact_fn(self):
         """Impact function no longer receives a budget parameter."""
-        space = _make_search_space(detected=["A"], fixed=["X"])
+        params = {
+            "A": ParameterDef(
+                name="A", param_type="int", possible_values=[1, 2, 4], fixed=False
+            ),
+            "X": ParameterDef(
+                name="X", param_type="str", possible_values=["a", "b"], fixed=False
+            ),
+        }
+        space = SearchSpace(parameters=params)
         fitness = MagicMock(return_value=500.0)
         impact_fn = MagicMock(return_value=[])
 
