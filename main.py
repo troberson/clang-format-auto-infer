@@ -17,10 +17,7 @@ from src.clang_format_parser import (
 from src.config_loader import load_json_option_values, load_forced_options
 from src.data_classes import GeneticAlgorithmLookups
 from src.optimization_engine import (
-    polish_coordinate_descent,
-    run_island_ga,
     run_iterative_optimization,
-    run_nevergrad_optimization,
 )
 from src.clang_format_adapter import (
     build_search_space,
@@ -45,9 +42,6 @@ debug_mode = False
 # for fitness evaluation across different runs with the same parameters.
 RANDOM_SEED = 42
 
-# Safety budget caps for optimizers that require a budget parameter.
-# Convergence is the real limiter; these are runaway guards.
-NG_SAFETY_BUDGET = 10_000
 
 OptionInfo = dict[str, str | list[str] | None]
 
@@ -424,7 +418,7 @@ def cmd_optimize(args: argparse.Namespace) -> None:
             options_info,
             lookups,
             analysis_results,
-            polish_undetect=args.optimizer == "iterative",
+            polish_undetect=True,
         )
         initial_config = {k: v.get("value") for k, v in options_info.items()}
 
@@ -455,71 +449,28 @@ def cmd_optimize(args: argparse.Namespace) -> None:
             random_seed=RANDOM_SEED,
         )
 
-        if args.optimizer == "genetic":
-            best = run_island_ga(
-                initial_config=initial_config,
-                search_space=search_space,
-                fitness_fn=fitness_fn,
-                num_islands=args.islands,
-                population_size=args.population_size,
-                num_iterations=args.iterations,
-                migration_interval=args.migration_interval,
+        result = run_iterative_optimization(
+            search_space=search_space,
+            fitness_fn=fitness_fn,
+            initial_config=initial_config,
+            impact_fn=measure_remaining_impact,
+            impact_kwargs=dict(
+                repo_path=temp_repo_paths[0],
+                base_options=options_info,
+                lookups=lookups,
+                process_id=0,
                 debug=debug_mode,
-                random_seed=RANDOM_SEED,
-                num_workers=args.jobs,
-            )
-            # Polish with coordinate descent
-            if args.polish_passes > 0:
-                polished = polish_coordinate_descent(
-                    config=best.config,
-                    initial_fitness=best.fitness,
-                    search_space=search_space,
-                    fitness_fn=fitness_fn,
-                    max_passes=args.polish_passes,
-                    debug=debug_mode,
-                )
-                best = polished
-            optimized_options_info = config_to_flat_options(best.config, options_info)
-        elif args.optimizer == "nevergrad":
-            result = run_nevergrad_optimization(
-                search_space=search_space,
-                objective=fitness_fn,
-                budget=NG_SAFETY_BUDGET,
-                num_workers=num_jobs,
-                optimizer_name=args.ng_optimizer,
-                debug=debug_mode,
-                initial_config=initial_config,
-            )
-            optimized_options_info = config_to_flat_options(
-                result.best_config, options_info
-            )
-        elif args.optimizer == "iterative":
-            result = run_iterative_optimization(
-                search_space=search_space,
-                fitness_fn=fitness_fn,
-                initial_config=initial_config,
-                impact_fn=measure_remaining_impact,
-                impact_kwargs=dict(
-                    repo_path=temp_repo_paths[0],
-                    base_options=options_info,
-                    lookups=lookups,
-                    process_id=0,
-                    debug=debug_mode,
-                    file_sample_percentage=args.file_sample_percentage,
-                    random_seed=RANDOM_SEED,
-                ),
-                num_islands=args.islands,
-                population_size=args.population_size,
-                num_workers=num_jobs,
-                convergence_threshold=args.convergence_threshold,
-                debug=debug_mode,
-            )
-            optimized_options_info = config_to_flat_options(
-                result.best_config, options_info
-            )
-        else:
-            print(f"Error: Unknown optimizer '{args.optimizer}'.", file=sys.stderr)
-            exit(1)
+                file_sample_percentage=args.file_sample_percentage,
+            ),
+            num_islands=num_jobs,
+            population_size=4,
+            num_workers=num_jobs,
+            convergence_threshold=args.convergence_threshold,
+            debug=debug_mode,
+        )
+        optimized_options_info = config_to_flat_options(
+            result.best_config, options_info
+        )
 
         print("\nOptimization complete.", file=sys.stderr)
 
@@ -608,46 +559,6 @@ def cmd_fetch_options(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
-def _warn_unused_iterative_flags(args: argparse.Namespace) -> None:
-    """Warn about and override GA/nevergrad-specific flags for iterative optimizer.
-
-    When --optimizer iterative is selected, the following
-    flags are ignored: --iterations, --population-size, --islands, --polish-passes,
-    --migration-interval, --ng-optimizer. Iterative uses its own internal defaults.
-
-    Replaces the unused values with optimizer-appropriate defaults so that
-    downstream code doesn't need special casing.
-    """
-    unused = []
-    # GA-specific flags that iterative doesn't use
-    if hasattr(args, "iterations"):
-        unused.append("--iterations")
-        args.iterations = 100
-    if hasattr(args, "population_size"):
-        unused.append("--population-size")
-        args.population_size = 4
-    if hasattr(args, "islands"):
-        unused.append("--islands")
-        args.islands = getattr(args, "jobs", 1)
-    if hasattr(args, "polish_passes"):
-        unused.append("--polish-passes")
-        args.polish_passes = 0
-    if hasattr(args, "migration_interval"):
-        unused.append("--migration-interval")
-        args.migration_interval = 15
-    # Nevergrad-specific flags that iterative manages internally
-    if hasattr(args, "ng_optimizer"):
-        unused.append("--ng-optimizer")
-        args.ng_optimizer = "TwoPointsDE"
-
-    if unused:
-        optimizer_name = getattr(args, "optimizer", "iterative")
-        print(
-            f"Warning: --optimizer {optimizer_name} ignores: {', '.join(unused)}. {optimizer_name.capitalize()} uses automatic internal defaults.",
-            file=sys.stderr,
-        )
-
-
 def main() -> None:
     """Parse command-line arguments and dispatch to the appropriate subcommand."""
     parser = argparse.ArgumentParser(
@@ -685,43 +596,6 @@ def main() -> None:
         action="store_true",
         help="Enable debug output (print commands being executed).",
     )
-    _ = opt_parser.add_argument(
-        "--optimizer",
-        choices=["genetic", "nevergrad", "iterative"],
-        default="genetic",
-        help="Choose the optimization algorithm (genetic, nevergrad, or iterative). Default: genetic.",
-    )
-    _ = opt_parser.add_argument(
-        "--iterations",
-        type=int,
-        default=100,
-        help="[Genetic Algorithm] Number of iterations (generations) for the genetic algorithm.",
-    )
-    _ = opt_parser.add_argument(
-        "--population-size",
-        type=int,
-        default=4,
-        help="[Genetic Algorithm] Total number of individuals across all islands in the genetic algorithm population.",
-    )
-    _ = opt_parser.add_argument(
-        "--islands",
-        type=int,
-        default=1,
-        help="[Genetic Algorithm] Number of independent populations (islands) for the genetic algorithm. Set to 1 for a single population.",
-    )
-
-    _ = opt_parser.add_argument(
-        "--polish-passes",
-        type=int,
-        default=3,
-        help="[Genetic Algorithm] Number of coordinate descent polish passes after GA convergence. Set to 0 to disable.",
-    )
-    _ = opt_parser.add_argument(
-        "--migration-interval",
-        type=int,
-        default=15,
-        help="[Genetic Algorithm] Number of generations between island migrations.",
-    )
 
     _ = opt_parser.add_argument(
         "--convergence-threshold",
@@ -729,12 +603,7 @@ def main() -> None:
         default=20,
         help="Stop optimizer sub-runs when no improvement occurs for this many consecutive generations/evaluations. Default 20.",
     )
-    _ = opt_parser.add_argument(
-        "--ng-optimizer",
-        type=str,
-        default="OnePlusOne",
-        help="[Nevergrad] Name of the Nevergrad optimizer to use (e.g., OnePlusOne, CMA, DE, PSO). See Nevergrad documentation for options.",
-    )
+
     _ = opt_parser.add_argument(
         "-j",
         "--jobs",
@@ -788,10 +657,6 @@ def main() -> None:
     )
 
     args = parser.parse_args()
-
-    # Validate phased/iterative optimizer flags.
-    if hasattr(args, "optimizer") and args.optimizer == "iterative":
-        _warn_unused_iterative_flags(args)
 
     if args.command == "fetch-options":
         cmd_fetch_options(args)

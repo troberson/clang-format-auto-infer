@@ -6,7 +6,6 @@ from .ga import (
     perform_migration,
     run_island_ga,
 )
-from .polish import polish_coordinate_descent
 from .nevergrad import build_instrumentation, run_nevergrad_optimization
 from .iterative import run_iterative_optimization
 
@@ -20,7 +19,6 @@ __all__ = [
     "mutate",
     "perform_migration",
     "run_island_ga",
-    "polish_coordinate_descent",
     "build_instrumentation",
     "run_nevergrad_optimization",
     "run_iterative_optimization",
