@@ -147,9 +147,16 @@ def _fill_missing_sub_options(json_options_lookup: dict[str, Any]) -> None:
                     # be meaningful than arbitrary jumps to far values.
                     json_type = existing.get("type", "")
                     default = _value
-                    min_val = 0 if json_type in ("Unsigned", "unsigned") else -128
-                    max_val = 255 if json_type == "int8_t" else 65535
-                    # Generate offsets: 0, ±1, ±2, ±3, ±4
+                    # Derive bounds from JSON type metadata. Unknown types get
+                    # a safe default range.
+                    if json_type in ("Unsigned", "unsigned"):
+                        min_val, max_val = 0, 65535
+                    elif json_type == "int8_t":
+                        min_val, max_val = -128, 255
+                    else:
+                        # Unknown type (e.g. "?") — use safe defaults.
+                        min_val, max_val = -128, 65535
+                    # Generate offsets: 0, +/-1, +/-2, +/-3, +/-4
                     offsets = [0, -1, 1, -2, 2, -3, 3, -4, 4]
                     values = []
                     for off in offsets:
