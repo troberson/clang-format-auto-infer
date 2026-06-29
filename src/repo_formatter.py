@@ -18,9 +18,32 @@ class ClangFormatWorkerError(Exception):
     pass
 
 
+# Common build/output directories to exclude from formatting.
+# These typically contain generated or compiler-ide files.
+_BUILD_DIRS = frozenset(
+    [
+        "build",
+        "cmake",
+        "dist",
+        "out",
+        "target",
+        "_build",
+        ".cmake",
+    ]
+)
+
+
 # Module-level cache for git ls-files results, keyed by repo_path.
 # Workers are long-lived processes, so this cache persists across calls.
 _file_list_cache: dict[str, list[str]] = {}
+
+
+def _is_build_dir(path: str) -> bool:
+    """Return True if the path is under a common build/output directory."""
+    for part in path.split("/"):
+        if part in _BUILD_DIRS:
+            return True
+    return False
 
 
 def _get_cached_file_list(repo_path: str, debug: bool) -> list[str]:
@@ -55,7 +78,9 @@ def _get_cached_file_list(repo_path: str, debug: bool) -> list[str]:
                 timeout=GIT_COMMAND_TIMEOUT,
                 cwd=repo_path,
             )
-            _file_list_cache[repo_path] = result.stdout.splitlines()
+            _file_list_cache[repo_path] = [
+                f for f in result.stdout.splitlines() if not _is_build_dir(f)
+            ]
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
             print(f"Error listing files in repo {repo_path}: {e}", file=sys.stderr)
             _file_list_cache[

@@ -9,6 +9,7 @@ import pytest
 from src.repo_formatter import (
     run_clang_format_and_count_changes,
     ClangFormatWorkerError,
+    _is_build_dir,  # pyright: ignore[reportPrivateUsage]
 )
 
 
@@ -564,3 +565,26 @@ class TestRunClangFormatAndCountChanges:
         )
         captured = capsys.readouterr()
         assert "Error removing temporary config file" in captured.err
+
+
+class TestIsBuildDir:
+    """Test _is_build_dir filters common build/output directories."""
+
+    def test_build_dirs_excluded(self):
+        assert _is_build_dir("build/data.cpp") is True
+        assert (
+            _is_build_dir("build/CMakeFiles/4.3.3/CompilerIdCXX/CMakeCXXCompilerId.cpp")
+            is True
+        )
+        assert _is_build_dir("out/src/main.cpp") is True
+        assert _is_build_dir("target/debug/lib.cpp") is True
+        assert _is_build_dir(".cmake/api/json/file.cpp") is True
+        assert _is_build_dir("dist/output.h") is True
+        assert _is_build_dir("cmake/generated/foo.c") is True
+        assert _is_build_dir("_build/temp.o") is True
+
+    def test_source_files_not_excluded(self):
+        assert _is_build_dir("src/main.cpp") is False
+        assert _is_build_dir("include/foo.h") is False
+        assert _is_build_dir("lib/util.c") is False
+        assert _is_build_dir("main.cpp") is False
