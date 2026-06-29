@@ -281,7 +281,7 @@ class TestRunNevergradOptimization:
             debug=True,
         )
         captured = capsys.readouterr()
-        assert "Submitted task" in captured.err
+        assert "Submitted eval" in captured.err
 
     @patch("src.optimization_engine.nevergrad.ng.optimizers.registry")
     @patch("src.optimization_engine.nevergrad.concurrent.futures.ThreadPoolExecutor")

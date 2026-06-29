@@ -145,6 +145,7 @@ def perform_migration(
     populations: list[list[Individual]],
     rng: random.Random,
     debug: bool = False,
+    tag: str = "ga",
 ) -> None:
     """Migrate best individuals between islands.
 
@@ -152,7 +153,7 @@ def perform_migration(
     replacing a random individual there.
     """
     if len(populations) < 2:
-        dbg("ga", "Skipping migration: less than 2 islands.")
+        dbg(tag, "Skipping migration: less than 2 islands.")
         return
 
     migrants: list[tuple[int, Individual]] = []
@@ -161,10 +162,10 @@ def perform_migration(
             best = min(pop, key=lambda ind: ind.fitness)
             migrants.append((i, best))
         elif debug:
-            dbg("ga", f"Warning: island {i} is empty, cannot select migrant.")
+            dbg(tag, f"Warning: island {i} is empty, cannot select migrant.")
 
     if debug:
-        dbg("ga", f"Performing migration with {len(migrants)} migrants.")
+        dbg(tag, f"Performing migration with {len(migrants)} migrants.")
 
     for source_idx, migrant in migrants:
         target_idx = source_idx
@@ -176,7 +177,7 @@ def perform_migration(
             target_pop.append(migrant)
             if debug:
                 dbg(
-                    "ga",
+                    tag,
                     f"  Migrant from island {source_idx} added to empty island {target_idx}.",
                 )
         else:
@@ -185,7 +186,7 @@ def perform_migration(
             target_pop.append(migrant)
             if debug:
                 dbg(
-                    "ga",
+                    tag,
                     f"  Migrant from island {source_idx} replaced an individual in island {target_idx}.",
                 )
 
@@ -201,8 +202,9 @@ def _evolve_island_task(
     tag: str,
 ) -> tuple[int, list[Individual], float]:
     """Evolve one island and return (index, new_population, best_fitness)."""
+    island_tag = f"{tag}/island-{island_idx}"
     new_pop = evolve_island_generation(
-        population, island_size, search_space, fitness_fn, rng, debug, tag
+        population, island_size, search_space, fitness_fn, rng, debug, island_tag
     )
     best_fitness = min(ind.fitness for ind in new_pop) if new_pop else float("inf")
     return island_idx, new_pop, best_fitness
@@ -478,7 +480,7 @@ def run_island_ga(  # noqa: PLR0913
 
             # Migration
             if num_islands > 1 and (iteration + 1) % migration_interval == 0:
-                perform_migration(populations, rng, debug)
+                perform_migration(populations, rng, debug, tag)
 
                 # Re-check overall best after migration
                 all_inds = [ind for pop in populations for ind in pop]

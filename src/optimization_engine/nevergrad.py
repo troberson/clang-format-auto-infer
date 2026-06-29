@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import sys
+import threading
 from collections.abc import Callable
 from typing import Any
 
@@ -68,16 +69,19 @@ class _ObjectiveWrapper:
     _objective: Callable[[dict[str, Any]], float]
     _search_space: SearchSpace
     _initial_config: dict[str, Any] | None
+    _tag: str
 
     def __init__(
         self,
         objective: Callable[[dict[str, Any]], float],
         search_space: SearchSpace,
         initial_config: dict[str, Any] | None,
+        tag: str = "",
     ) -> None:
         self._objective = objective
         self._search_space = search_space
         self._initial_config = initial_config
+        self._tag = tag
 
     def __call__(self, **ng_params: Any) -> float:
         config = dict(self._initial_config) if self._initial_config else {}
@@ -155,22 +159,28 @@ def run_nevergrad_optimization(
     pending_futures: dict[concurrent.futures.Future[float], ng.p.Parameter] = {}
 
     # Use a module-level callable so ThreadPoolExecutor can invoke it.
-    wrapper = _ObjectiveWrapper(objective, search_space, initial_config)
+    wrapper = _ObjectiveWrapper(objective, search_space, initial_config, tag)
 
     executor: concurrent.futures.ThreadPoolExecutor | None = None
 
+    # Track evaluation numbers per candidate for debug tracing.
+    eval_counter = 0
+    candidate_evals: dict[ng.p.Parameter, int] = {}
+
     def _submit_next_evaluation() -> bool:
-        nonlocal current_eval_count
+        nonlocal current_eval_count, eval_counter
         if current_eval_count < budget:
             assert executor is not None
             candidate = optimizer.ask()
+            eval_counter += 1
+            candidate_evals[candidate] = eval_counter
             future = executor.submit(wrapper, **candidate.kwargs)
             pending_futures[future] = candidate
             current_eval_count += 1
             if debug:
                 dbg(
                     tag,
-                    f"Submitted task. Active: {len(pending_futures)}/{num_workers}. Evaluations: {current_eval_count}/{budget}",
+                    f"Submitted eval {eval_counter}. Active: {len(pending_futures)}/{num_workers}. Total submitted: {current_eval_count}/{budget}",
                 )
             return True
         return False
@@ -202,6 +212,8 @@ def run_nevergrad_optimization(
 
             for completed_future in completed_batch:
                 candidate = pending_futures.pop(completed_future)
+                eval_num = candidate_evals.pop(candidate, len(best_fitness_history) + 1)
+                thread_id = threading.current_thread().ident or 0
                 try:
                     loss = completed_future.result()
                     optimizer.tell(candidate, loss)
@@ -210,9 +222,10 @@ def run_nevergrad_optimization(
                     if loss < best_overall_fitness:
                         best_overall_fitness = loss
                         no_improve_count = 0
-                        print(
-                            f"[{tag}] New overall best fitness: {best_overall_fitness}",
-                            file=sys.stderr,
+                        dbg(
+                            tag,
+                            f"Eval {eval_num} (thread={thread_id}): New best fitness: {best_overall_fitness}",
+                            summary=True,
                         )
                     else:
                         no_improve_count += 1
@@ -231,7 +244,7 @@ def run_nevergrad_optimization(
                     if debug:
                         dbg(
                             tag,
-                            f"Evaluation {len(best_fitness_history)} (Loss: {loss}, Best: {best_overall_fitness})",
+                            f"Eval {eval_num} (thread={thread_id}) completed. Loss: {loss}, Best: {best_overall_fitness}",
                         )
                     elif len(best_fitness_history) % 50 == 0:
                         print(
