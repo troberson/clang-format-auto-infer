@@ -129,9 +129,32 @@ def _fill_missing_sub_options(json_options_lookup: dict[str, Any]) -> None:
         _parent_names.update(k for k in json_options_lookup if "." not in k)
 
         for name, py_type, _value in flat:
-            if name in json_options_lookup or name in _excluded:
+            if name in _excluded:
                 continue
-            # Only add if the parent option exists in the JSON lookup.
+
+            existing = json_options_lookup.get(name)
+            # Fill possible_values if missing or empty.
+            if existing is not None:
+                if existing.get("possible_values"):
+                    continue
+                # Option exists in JSON but has no possible_values.
+                # Infer them from dump-config type.
+                if py_type == "bool":  # pragma: no cover
+                    existing["possible_values"] = ["true", "false"]
+                elif py_type == "int":  # pragma: no cover
+                    existing["possible_values"] = [
+                        "-4",
+                        "-2",
+                        "0",
+                        "1",
+                        "2",
+                        "3",
+                        "4",
+                        "8",
+                    ]
+                continue
+
+            # Only add new entries if the parent option exists in the JSON lookup.
             parent = name.rsplit(".", 1)[0] if "." in name else name
             if parent not in json_options_lookup:
                 continue

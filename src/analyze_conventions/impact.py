@@ -95,9 +95,14 @@ def measure_remaining_impact(
     skipped_no_values = 0
     skipped_single_value = 0
 
+    skipped_not_in_base_names: list[str] = []
+    skipped_no_values_names: list[str] = []
+    skipped_single_value_names: list[str] = []
+
     for full_path in candidate_names:
         if full_path not in base_options:
             skipped_not_in_base += 1
+            skipped_not_in_base_names.append(full_path)
             continue
 
         json_info = lookups.json_options_lookup.get(full_path, {})
@@ -108,11 +113,13 @@ def measure_remaining_impact(
                 possible_values = list(CURATED_PENALTY_VALUES)
             else:
                 skipped_no_values += 1
+                skipped_no_values_names.append(full_path)
                 continue
 
         # Skip if only one possible value.
         if len(possible_values) <= 1:
             skipped_single_value += 1
+            skipped_single_value_names.append(full_path)
             continue
 
         parameters[full_path] = ParameterDef(
@@ -130,6 +137,16 @@ def measure_remaining_impact(
             f"Impact scan: {len(candidate_names)} candidates -> {len(parameters)} optimizable ("
             + f"{skipped_not_in_base} not in base, {skipped_no_values} no values, {skipped_single_value} single value)",
         )
+        if skipped_no_values_names:
+            dbg(
+                "impact",
+                f"  No values (first 10): {skipped_no_values_names[:10]}",
+            )
+        if skipped_not_in_base_names:
+            dbg(
+                "impact",
+                f"  Not in base (first 10): {skipped_not_in_base_names[:10]}",
+            )
 
     if not parameters:
         return []
