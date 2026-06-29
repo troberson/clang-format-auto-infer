@@ -192,7 +192,6 @@ def run_phased_optimization(
     num_islands: int = 1,
     population_size: int = 4,
     num_workers: int = 1,
-    max_restarts: int = 1,  # pyright: ignore[reportUnusedParameter]
     convergence_threshold: int = CONVERGENCE_THRESHOLD,
     debug: bool = False,
 ) -> OptimizationResult:
@@ -211,7 +210,6 @@ def run_phased_optimization(
         num_islands: GA island count.
         population_size: GA population size.
         num_workers: nevergrad worker count.
-        max_restarts: Maximum restarts per phase on stagnation.
         convergence_threshold: Stop sub-runs when no improvement.
         debug: Enable verbose output.
 

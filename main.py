@@ -540,7 +540,6 @@ def cmd_optimize(args: argparse.Namespace) -> None:
                 num_islands=args.islands,
                 population_size=args.population_size,
                 num_workers=num_jobs,
-                max_restarts=args.max_restarts,
                 convergence_threshold=args.convergence_threshold,
                 debug=debug_mode,
             )
@@ -667,8 +666,7 @@ def _warn_unused_phased_flags(args: argparse.Namespace) -> None:
 
     When --optimizer phased or --optimizer iterative is selected, the following
     flags are ignored: --iterations, --population-size, --islands, --polish-passes,
-    --migration-interval, --checkpoint-interval, --checkpoint-resume, --ng-optimizer.
-    These optimizers use their own internal defaults.
+    --migration-interval, --ng-optimizer. These optimizers use their own internal defaults.
 
     Replaces the unused values with optimizer-appropriate defaults so that
     downstream code doesn't need special casing.
@@ -690,12 +688,6 @@ def _warn_unused_phased_flags(args: argparse.Namespace) -> None:
     if hasattr(args, "migration_interval"):
         unused.append("--migration-interval")
         args.migration_interval = 15
-    if hasattr(args, "checkpoint_interval"):
-        unused.append("--checkpoint-interval")
-        args.checkpoint_interval = 0
-    if hasattr(args, "checkpoint_resume"):
-        unused.append("--checkpoint-resume")
-        args.checkpoint_resume = None
     # Nevergrad-specific flags that phased manages internally
     if hasattr(args, "ng_optimizer"):
         unused.append("--ng-optimizer")
@@ -770,11 +762,7 @@ def main() -> None:
         default=1,
         help="[Genetic Algorithm] Number of independent populations (islands) for the genetic algorithm. Set to 1 for a single population.",
     )
-    _ = opt_parser.add_argument(
-        "--plot-fitness",
-        action="store_true",
-        help="[Genetic Algorithm & Nevergrad] Visualize the best fitness score over time for each island/evaluation.",
-    )
+
     _ = opt_parser.add_argument(
         "--polish-passes",
         type=int,
@@ -787,18 +775,7 @@ def main() -> None:
         default=15,
         help="[Genetic Algorithm] Number of generations between island migrations.",
     )
-    _ = opt_parser.add_argument(
-        "--checkpoint-interval",
-        type=int,
-        default=0,
-        help="[Genetic Algorithm] Save checkpoint every N iterations (0 = disabled).",
-    )
-    _ = opt_parser.add_argument(
-        "--checkpoint-resume",
-        type=str,
-        default=None,
-        help="[Genetic Algorithm] Resume optimization from a checkpoint file.",
-    )
+
     _ = opt_parser.add_argument(
         "--convergence-threshold",
         type=int,
@@ -847,12 +824,7 @@ def main() -> None:
             "auto-detects fast backends like /dev/shm (tmpfs) if available."
         ),
     )
-    _ = opt_parser.add_argument(
-        "--max-restarts",
-        type=int,
-        default=1,
-        help="[Phased] Maximum restarts per phase on stagnation. Default: 1.",
-    )
+
     # --- fetch-options subcommand ---
     fetch_parser = subparsers.add_parser(
         "fetch-options",

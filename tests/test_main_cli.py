@@ -295,7 +295,6 @@ class TestAnalyzeFlags:
             file_sample_percentage=100.0,
             jobs=1,
             ng_optimizer="TwoPointsDE",
-            max_restarts=1,
             convergence_threshold=20,
         )
         with patch("main.os.path.isdir", return_value=True):
@@ -1099,7 +1098,6 @@ class TestCmdOptimizeErrorPaths:
             convergence_threshold=20,
             islands=1,
             population_size=4,
-            max_restarts=1,
             file_sample_percentage=100.0,
             jobs=1,
         )
@@ -1403,7 +1401,6 @@ class TestPhasedPipelineWiring:
             convergence_threshold=20,
             islands=1,
             population_size=4,
-            max_restarts=1,
             file_sample_percentage=100.0,
             jobs=1,
         )
@@ -1592,8 +1589,6 @@ class TestWarnUnusedPhasedFlags:
             islands=3,
             polish_passes=5,
             migration_interval=10,
-            checkpoint_interval=50,
-            checkpoint_resume="/tmp/ckpt",
             ng_optimizer="CMA",
         )
         _warn_unused_phased_flags(args)
@@ -1614,8 +1609,6 @@ class TestWarnUnusedPhasedFlags:
             islands=3,
             polish_passes=5,
             migration_interval=10,
-            checkpoint_interval=50,
-            checkpoint_resume="/tmp/ckpt",
             ng_optimizer="CMA",
         )
         _warn_unused_phased_flags(args)
@@ -1624,8 +1617,6 @@ class TestWarnUnusedPhasedFlags:
         assert args.islands == 1
         assert args.polish_passes == 0
         assert args.migration_interval == 15
-        assert args.checkpoint_interval == 0
-        assert args.checkpoint_resume is None
         assert args.ng_optimizer == "TwoPointsDE"
 
     def test_no_warning_when_no_unused_flags(self, capsys):
