@@ -65,9 +65,12 @@ def build_search_space(
             if isinstance(raw, DetectedOption):
                 value = raw.value
                 tier = raw.tier
+                # Forced options are fixed — the analyzer is certain of the value.
+                is_forced = raw.confidence == "forced"
             else:
                 value = raw
                 tier = "polish"
+                is_forced = False
             possible_values = lookups.json_options_lookup.get(full_path, {}).get(
                 "possible_values"
             ) or [value]
@@ -78,7 +81,7 @@ def build_search_space(
                 name=full_path,
                 param_type=option_info["type"],
                 possible_values=possible_values,
-                fixed=is_penalty,
+                fixed=is_penalty or is_forced,
                 tier=tier,
             )
             continue

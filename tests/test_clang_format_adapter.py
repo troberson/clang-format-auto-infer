@@ -84,6 +84,30 @@ class TestBuildSearchSpace:
         assert ss.parameters["UseTab"].fixed is True
         assert ss.parameters["UseTab"].mutable is False
 
+    def test_forced_confidence_makes_option_fixed(self):
+        # Options with confidence="forced" are fixed in the search space.
+        lookups = _make_lookups(
+            json_options={"Language": {"possible_values": ["C", "Cpp"]}}
+        )
+        analysis = {
+            "Language": DetectedOption("Cpp", "forced"),
+        }
+        ss = build_search_space(_make_base_options(), lookups, analysis)
+        assert ss.parameters["Language"].fixed is True
+        assert ss.parameters["Language"].mutable is False
+
+    def test_detected_confidence_keeps_option_mutable(self):
+        # Options with confidence="detected" remain mutable.
+        lookups = _make_lookups(
+            json_options={"IndentWidth": {"possible_values": [2, 4, 8]}}
+        )
+        analysis = {
+            "IndentWidth": DetectedOption(4, "detected"),
+        }
+        ss = build_search_space(_make_base_options(), lookups, analysis)
+        assert ss.parameters["IndentWidth"].mutable is True
+        assert ss.parameters["IndentWidth"].fixed is False
+
     def test_no_analysis_all_options_fixed(self):
         # Without analysis, all options are fixed invariants.
         lookups = _make_lookups(

@@ -245,7 +245,7 @@ def analyze_with_metadata(
     result: dict[str, DetectedOption] = {}
 
     # Always-detected options
-    result["Language"] = DetectedOption(language, "detected")
+    result["Language"] = DetectedOption(language, "forced")
     result["QualifierAlignment"] = DetectedOption(qualifier_align, "detected")
 
     # IndentWidth — guessed when pure-tab
