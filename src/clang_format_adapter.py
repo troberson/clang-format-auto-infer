@@ -149,8 +149,11 @@ def build_search_space(
             )
             continue
 
-        # Analysis results: detected conventions are mutable (GA optimizes them).
-        # Use the detected value as the seed, but allow mutation to other values.
+        # Analysis results: detected conventions are fixed at their detected values.
+        # The analyzer finds these deterministically (e.g., ColumnLimit from 95th
+        # percentile of line lengths). They should not be re-optimized.
+        # Exception: 'guessed' confidence means no observable signal — these need
+        # empirical validation and should remain mutable.
         # Exception: penalty options are always fixed — they must be optimized as a group.
         if analysis_results and full_path in analysis_results:
             raw = analysis_results[full_path]
@@ -158,25 +161,24 @@ def build_search_space(
             if isinstance(raw, DetectedOption):
                 value = raw.value
                 tier = raw.tier
-                # Forced options are fixed — the analyzer is certain of the value.
-                is_forced = raw.confidence == "forced"
+                is_guessed = raw.confidence == "guessed"
             else:
                 value = raw
                 tier = "polish"
-                is_forced = False
+                is_guessed = False
             possible_values = lookups.json_options_lookup.get(full_path, {}).get(
                 "possible_values"
             ) or [value]
             possible_values = list(possible_values)
-            # Force penalty options to be fixed, even if detected.
+            # Force penalty options to be fixed, even if guessed.
             is_penalty = full_path.startswith("Penalty")
             parameters[full_path] = ParameterDef(
                 name=full_path,
                 param_type=option_info["type"],
                 possible_values=possible_values,
-                fixed=is_penalty or is_forced,
+                fixed=not is_guessed or is_penalty,
                 tier=tier,
-                confidence="forced" if is_forced else "detected",
+                confidence="guessed" if is_guessed else "detected",
             )
             continue
 

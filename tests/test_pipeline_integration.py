@@ -41,10 +41,10 @@ class TestFullPipelineWiring:
     """Verify the full pipeline wires correctly from analysis to optimization."""
 
     def test_analysis_results_flow_to_search_space(self):
-        """Detected options become mutable in the search space."""
+        """Detected options become fixed; guessed options become mutable."""
         analysis = {
-            "IndentWidth": DetectedOption(4, "detected", "structure"),
-            "UseTab": DetectedOption(False, "detected", "polish"),
+            "IndentWidth": DetectedOption(4, "guessed", "structure"),
+            "UseTab": DetectedOption(False, "guessed", "polish"),
         }
         lookups = _make_lookups(
             json_options={
@@ -61,8 +61,8 @@ class TestFullPipelineWiring:
     def test_impact_tiers_override_analysis_tiers(self):
         """Impact measurement can reclassify tiers from structure to polish."""
         analysis = {
-            "IndentWidth": DetectedOption(4, "detected", "structure"),
-            "UseTab": DetectedOption(False, "detected", "structure"),
+            "IndentWidth": DetectedOption(4, "guessed", "structure"),
+            "UseTab": DetectedOption(False, "guessed", "structure"),
         }
         # Simulate impact measurement reclassifying UseTab to polish
         impact_tiers = {"IndentWidth": "structure", "UseTab": "polish"}
@@ -83,7 +83,7 @@ class TestFullPipelineWiring:
     def test_penalty_options_start_fixed(self):
         """Penalty options get curated values but start fixed."""
         analysis = {
-            "IndentWidth": DetectedOption(4, "detected", "structure"),
+            "IndentWidth": DetectedOption(4, "guessed", "structure"),
         }
         lookups = _make_lookups(
             json_options={"IndentWidth": {"possible_values": [2, 4, 8]}}
@@ -98,7 +98,7 @@ class TestFullPipelineWiring:
     def test_polish_undetect_unlocks_undetected_options(self):
         """polish_undetect=True makes undetected options mutable."""
         analysis = {
-            "IndentWidth": DetectedOption(4, "detected", "structure"),
+            "IndentWidth": DetectedOption(4, "guessed", "structure"),
         }
         lookups = _make_lookups(
             json_options={
@@ -115,7 +115,7 @@ class TestFullPipelineWiring:
     def test_polish_undetect_false_keeps_undetected_fixed(self):
         """polish_undetect=False keeps undetected options fixed."""
         analysis = {
-            "IndentWidth": DetectedOption(4, "detected", "structure"),
+            "IndentWidth": DetectedOption(4, "guessed", "structure"),
         }
         lookups = _make_lookups(
             json_options={
@@ -131,7 +131,7 @@ class TestFullPipelineWiring:
     def test_forced_options_always_fixed(self):
         """Forced options are fixed regardless of detection or polish_undetect."""
         analysis = {
-            "UseTab": DetectedOption(False, "detected", "structure"),
+            "UseTab": DetectedOption(False, "guessed", "structure"),
         }
         lookups = _make_lookups(
             json_options={"UseTab": {"possible_values": [True, False]}},
@@ -147,8 +147,8 @@ class TestFullPipelineWiring:
         """Each tier only returns parameters belonging to that tier."""
         analysis = {
             "IndentWidth": DetectedOption(4, "guessed", "resolve"),
-            "UseTab": DetectedOption(False, "detected", "structure"),
-            "BreakBeforeBraces": DetectedOption("Attach", "detected", "polish"),
+            "UseTab": DetectedOption(False, "guessed", "structure"),
+            "BreakBeforeBraces": DetectedOption("Attach", "guessed", "polish"),
         }
         lookups = _make_lookups(
             json_options={
@@ -207,13 +207,13 @@ class TestFullPipelineWiring:
     def test_search_space_mutable_names(self):
         """mutable_names returns only mutable parameter names."""
         analysis = {
-            "IndentWidth": DetectedOption(4, "detected", "structure"),
+            "IndentWidth": DetectedOption(4, "guessed", "structure"),
         }
         lookups = _make_lookups(
             json_options={"IndentWidth": {"possible_values": [2, 4, 8]}}
         )
         ss = build_search_space(_make_base_options(), lookups, analysis)
-        # IndentWidth is detected, PenaltyExcessCharacter starts fixed
+        # IndentWidth is guessed (mutable), PenaltyExcessCharacter starts fixed
         assert "IndentWidth" in ss.mutable_names
         assert "PenaltyExcessCharacter" not in ss.mutable_names
         assert "UseTab" not in ss.mutable_names
@@ -221,8 +221,8 @@ class TestFullPipelineWiring:
     def test_initial_config_seeded_from_analysis(self):
         """Initial config is seeded with detected values."""
         analysis = {
-            "IndentWidth": DetectedOption(4, "detected", "structure"),
-            "UseTab": DetectedOption(False, "detected", "polish"),
+            "IndentWidth": DetectedOption(4, "guessed", "structure"),
+            "UseTab": DetectedOption(False, "guessed", "polish"),
         }
         initial_config = {}
         for key, raw in analysis.items():
@@ -268,14 +268,16 @@ class TestFullPipelineWiring:
             500,
         ]
         assert ss.parameters["PenaltyExcessCharacter"].tier == "structure"
+        # Penalty options are always fixed
+        assert ss.parameters["PenaltyExcessCharacter"].fixed is True
 
     def test_full_pipeline_data_flow(self):
         """End-to-end: analysis -> impact -> search_space -> iterative optimization."""
         # Step 1: Analysis produces detected options
         analysis = {
             "IndentWidth": DetectedOption(4, "guessed", "resolve"),
-            "UseTab": DetectedOption(False, "detected", "structure"),
-            "ColumnLimit": DetectedOption(80, "detected", "polish"),
+            "UseTab": DetectedOption(False, "guessed", "structure"),
+            "ColumnLimit": DetectedOption(80, "guessed", "polish"),
         }
 
         # Step 2: Impact measurement reclassifies tiers
@@ -306,7 +308,7 @@ class TestFullPipelineWiring:
         polish_params = ss.mutable_by_tier("polish")
         assert len(resolve_params) == 1
         assert resolve_params[0].name == "IndentWidth"
-        # UseTab, ColumnLimit are polish tier. Penalties start fixed.
+        # UseTab is polish tier and mutable. ColumnLimit is undetected but polish_undetect unlocks it.
         assert len(polish_params) == 2
 
         # Step 6: Verify initial config seeding

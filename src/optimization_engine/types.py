@@ -21,8 +21,9 @@ class ParameterDef:
             - 'polish': Lower-impact options for final tuning.
         confidence: How certain the analyzer is about this value.
             - 'forced': Analyzer is certain, must not be changed.
-            - 'detected': Analyzer detected from source, can be optimized.
-            - 'guessed': Analyzer guessed, needs empirical validation.
+            - 'detected': Analyzer detected from source, fixed in search space.
+            - 'guessed': Analyzer guessed, needs empirical validation (mutable).
+            - '' (empty): Not detected by analyzer, candidate for impact scan.
     """
 
     name: str
@@ -30,7 +31,7 @@ class ParameterDef:
     possible_values: list[Any] = field(default_factory=list)
     fixed: bool = False
     tier: str = "polish"
-    confidence: str = "detected"
+    confidence: str = ""
 
     @property
     def mutable(self) -> bool:

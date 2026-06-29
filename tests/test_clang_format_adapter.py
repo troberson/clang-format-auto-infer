@@ -35,11 +35,13 @@ def _make_base_options() -> dict[str, Any]:
 
 class TestBuildSearchSpace:
     def test_includes_mutable_options(self):
-        # Detected options are mutable, seeded with detected value.
+        # Guessed options are mutable, seeded with guessed value.
         lookups = _make_lookups(
             json_options={"IndentWidth": {"possible_values": [2, 4]}}
         )
-        analysis = {"IndentWidth": 4}
+        analysis = {
+            "IndentWidth": DetectedOption(4, "guessed"),
+        }
         ss = build_search_space(_make_base_options(), lookups, analysis)
         assert "IndentWidth" in ss.parameters
         assert ss.parameters["IndentWidth"].mutable
@@ -64,21 +66,22 @@ class TestBuildSearchSpace:
         assert ss.parameters["Language"].param_type == "str"
 
     def test_analysis_results_seed_detected_options(self):
-        # Detected options get all JSON possible_values for GA to explore.
+        # Detected options are fixed — analyzer found them deterministically.
         lookups = _make_lookups(
             json_options={"IndentWidth": {"possible_values": [2, 4, 8]}}
         )
         analysis = {"IndentWidth": 4}
         ss = build_search_space(_make_base_options(), lookups, analysis)
         assert ss.parameters["IndentWidth"].possible_values == [2, 4, 8]
-        assert ss.parameters["IndentWidth"].mutable is True
+        assert ss.parameters["IndentWidth"].fixed is True
+        assert ss.parameters["IndentWidth"].mutable is False
 
     def test_undetected_options_are_fixed(self):
         # Options not detected by analyzer are fixed invariants.
         lookups = _make_lookups(
             json_options={"UseTab": {"possible_values": [True, False]}}
         )
-        analysis = {"IndentWidth": 2}
+        analysis = {"IndentWidth": DetectedOption(2, "guessed")}
         ss = build_search_space(_make_base_options(), lookups, analysis)
         assert ss.parameters["IndentWidth"].mutable is True
         assert ss.parameters["UseTab"].fixed is True
@@ -96,8 +99,8 @@ class TestBuildSearchSpace:
         assert ss.parameters["Language"].fixed is True
         assert ss.parameters["Language"].mutable is False
 
-    def test_detected_confidence_keeps_option_mutable(self):
-        # Options with confidence="detected" remain mutable.
+    def test_detected_confidence_makes_option_fixed(self):
+        # Options with confidence="detected" are fixed in the search space.
         lookups = _make_lookups(
             json_options={"IndentWidth": {"possible_values": [2, 4, 8]}}
         )
@@ -105,8 +108,8 @@ class TestBuildSearchSpace:
             "IndentWidth": DetectedOption(4, "detected"),
         }
         ss = build_search_space(_make_base_options(), lookups, analysis)
-        assert ss.parameters["IndentWidth"].mutable is True
-        assert ss.parameters["IndentWidth"].fixed is False
+        assert ss.parameters["IndentWidth"].fixed is True
+        assert ss.parameters["IndentWidth"].mutable is False
 
     def test_no_analysis_all_options_fixed(self):
         # Without analysis, all options are fixed invariants.
@@ -128,7 +131,7 @@ class TestBuildSearchSpace:
 
     def test_analysis_results_with_forced_options(self):
         lookups = _make_lookups(forced_options={"UseTab": True})
-        analysis = {"IndentWidth": 4}
+        analysis = {"IndentWidth": DetectedOption(4, "guessed")}
         ss = build_search_space(_make_base_options(), lookups, analysis)
         assert ss.parameters["UseTab"].fixed is True
         assert ss.parameters["IndentWidth"].mutable is True
@@ -140,18 +143,20 @@ class TestBuildSearchSpace:
         assert "NonExistentOption" not in ss.parameters
 
     def test_detected_option_propagates_tier(self):
+        # Guessed options propagate tier and remain mutable.
+        # Detected options propagate tier but are fixed.
         lookups = _make_lookups(
             json_options={"IndentWidth": {"possible_values": [2, 4, 8]}}
         )
         analysis = {
             "IndentWidth": DetectedOption(4, "guessed", "resolve"),
-            "UseTab": DetectedOption(False, "detected", "structure"),
         }
         ss = build_search_space(_make_base_options(), lookups, analysis)
         assert ss.parameters["IndentWidth"].tier == "resolve"
-        assert ss.parameters["UseTab"].tier == "structure"
+        assert ss.parameters["IndentWidth"].mutable is True
 
     def test_detected_option_value_used_for_possible_values(self):
+        # Detected options get JSON possible_values but are fixed.
         lookups = _make_lookups(
             json_options={"IndentWidth": {"possible_values": [2, 4, 8]}}
         )
@@ -160,7 +165,8 @@ class TestBuildSearchSpace:
         }
         ss = build_search_space(_make_base_options(), lookups, analysis)
         assert ss.parameters["IndentWidth"].possible_values == [2, 4, 8]
-        assert ss.parameters["IndentWidth"].mutable is True
+        assert ss.parameters["IndentWidth"].fixed is True
+        assert ss.parameters["IndentWidth"].mutable is False
 
     def test_raw_value_defaults_tier_to_polish(self):
         lookups = _make_lookups(
@@ -174,12 +180,10 @@ class TestBuildSearchSpace:
         lookups = _make_lookups(
             json_options={
                 "IndentWidth": {"possible_values": [2, 4, 8]},
-                "UseTab": {"possible_values": [True, False]},
             }
         )
         analysis = {
             "IndentWidth": DetectedOption(4, "guessed", "resolve"),
-            "UseTab": DetectedOption(False, "detected", "structure"),
         }
         ss = build_search_space(_make_base_options(), lookups, analysis)
         resolve_params = ss.mutable_by_tier("resolve")
@@ -187,6 +191,7 @@ class TestBuildSearchSpace:
         assert resolve_params[0].name == "IndentWidth"
 
     def test_mutable_by_tier_structure(self):
+        # Detected options are fixed, so structure tier is empty unless guessed.
         lookups = _make_lookups(
             json_options={
                 "IndentWidth": {"possible_values": [2, 4, 8]},
@@ -194,13 +199,12 @@ class TestBuildSearchSpace:
             }
         )
         analysis = {
-            "IndentWidth": DetectedOption(4, "guessed", "resolve"),
-            "UseTab": DetectedOption(False, "detected", "structure"),
+            "IndentWidth": DetectedOption(4, "guessed", "structure"),
         }
         ss = build_search_space(_make_base_options(), lookups, analysis)
         structure_params = ss.mutable_by_tier("structure")
         assert len(structure_params) == 1
-        assert structure_params[0].name == "UseTab"
+        assert structure_params[0].name == "IndentWidth"
 
     def test_penalty_options_get_curated_values(self):
         base = {
