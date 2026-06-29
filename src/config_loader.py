@@ -1,7 +1,9 @@
 import json
 import yaml
 import os
+import subprocess
 import sys
+from typing import Any
 
 
 def load_json_option_values(file_path):
@@ -59,6 +61,13 @@ def load_json_option_values(file_path):
                 "JavaScriptWrapImports",
             ):
                 json_options_lookup.pop(js_option, None)
+
+            # Post-process: fill in missing sub-options by cross-referencing
+            # with clang-format --dump-config. The HTML fetcher may miss some
+            # nested options (e.g., AlignConsecutiveAssignments.AcrossComments)
+            # that clang-format exposes as flat dot-notation keys.
+            _fill_missing_sub_options(json_options_lookup)
+
         print(f"Successfully loaded option values from '{file_path}'.", file=sys.stderr)
         return json_options_lookup
     except json.JSONDecodeError as e:
@@ -69,6 +78,84 @@ def load_json_option_values(file_path):
             f"Error reading option values JSON file '{file_path}': {e}", file=sys.stderr
         )
         sys.exit(1)
+
+
+def _fill_missing_sub_options(json_options_lookup: dict[str, Any]) -> None:
+    """Add missing sub-options by querying clang-format --dump-config.
+
+    The HTML fetcher may miss nested options that clang-format exposes as
+    flat dot-notation keys (e.g., AlignConsecutiveAssignments.AcrossComments).
+    This function discovers those gaps and fills them with inferred types.
+
+    Args:
+        json_options_lookup: Dict to mutate in-place.
+    """
+    try:
+        result = subprocess.run(
+            ["clang-format", "--dump-config"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            return  # pragma: no cover
+
+        import yaml as _yaml
+
+        cfg = _yaml.safe_load(result.stdout)
+        if not cfg:
+            return  # pragma: no cover
+
+        def _flatten(d, prefix=""):
+            keys = []
+            for k, v in d.items():
+                full = f"{prefix}{k}" if not prefix else f"{prefix}.{k}"
+                if isinstance(v, dict):
+                    keys.extend(_flatten(v, full))
+                else:
+                    keys.append((full, type(v).__name__, v))
+            return keys
+
+        flat = _flatten(cfg)
+        # Options that are explicitly excluded and should not be re-added.
+        _excluded = {
+            "InsertTrailingCommas",
+            "JavaScriptQuotes",
+            "JavaScriptWrapImports",
+        }
+        # Only fill in sub-options whose parent exists in the JSON lookup.
+        # This avoids adding entries for options the fetcher never saw.
+        _parent_names = {k.rsplit(".", 1)[0] for k in json_options_lookup if "." in k}
+        _parent_names.update(k for k in json_options_lookup if "." not in k)
+
+        for name, py_type, _value in flat:
+            if name in json_options_lookup or name in _excluded:
+                continue
+            # Only add if the parent option exists in the JSON lookup.
+            parent = name.rsplit(".", 1)[0] if "." in name else name
+            if parent not in json_options_lookup:
+                continue
+            # Infer clang-format type from Python type.
+            if py_type == "bool":
+                json_options_lookup[name] = {
+                    "type": "bool",
+                    "possible_values": ["true", "false"],
+                }
+            elif py_type == "int":  # pragma: no cover
+                # Integer options get a reasonable range.
+                json_options_lookup[name] = {
+                    "type": "int",
+                    "possible_values": ["-4", "-2", "0", "1", "2", "3", "4", "8"],
+                }
+            # Strings/lists are left without possible_values; the optimizer
+            # will treat them as fixed at their dump-config value.
+    except (
+        subprocess.TimeoutExpired,
+        FileNotFoundError,
+        Exception,
+    ):  # pragma: no cover
+        # If clang-format is unavailable or fails, just skip this step.
+        pass
 
 
 def load_forced_options(file_path):
