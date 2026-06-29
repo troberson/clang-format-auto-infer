@@ -172,13 +172,26 @@ def _fill_missing_sub_options(json_options_lookup: dict[str, Any]) -> None:
             if parent not in json_options_lookup:
                 continue
             # Infer clang-format type from Python type.
-            # Only fill booleans — integers are left without possible_values
-            # because we don't have JSON type metadata for new entries.
             if py_type == "bool":
                 json_options_lookup[name] = {
                     "type": "bool",
                     "possible_values": ["true", "false"],
                 }
+            elif py_type == "int":  # pragma: no cover
+                # New entry — no JSON type metadata. Use safe default bounds.
+                default = _value
+                min_val, max_val = -128, 65535
+                offsets = [0, -1, 1, -2, 2, -3, 3, -4, 4]
+                values = []
+                for off in offsets:
+                    v = default + off
+                    if min_val <= v <= max_val:
+                        values.append(str(v))
+                if values:
+                    json_options_lookup[name] = {
+                        "type": "int",
+                        "possible_values": values,
+                    }
             # Strings/lists are left without possible_values; the optimizer
             # will treat them as fixed at their dump-config value.
     except (
