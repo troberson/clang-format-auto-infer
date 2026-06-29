@@ -1,14 +1,13 @@
-"""Integration tests for the full phased optimization pipeline.
+"""Integration tests for the optimization pipeline.
 
 Tests the end-to-end flow: analyze -> measure_impact -> build_search_space ->
-run_phased_optimization. External dependencies (clang-format, git, subprocess)
+run_iterative_optimization. External dependencies (clang-format, git, subprocess)
 are mocked so the tests verify wiring and data flow rather than actual formatting.
 """
 
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import patch
 
 from src.analyze_conventions import DetectedOption
 from src.clang_format_adapter import (
@@ -16,10 +15,6 @@ from src.clang_format_adapter import (
     build_search_space,
 )
 from src.data_classes import GeneticAlgorithmLookups
-from src.optimization_engine.types import (
-    Individual,
-    OptimizationResult,
-)
 
 
 def _make_lookups(
@@ -175,49 +170,9 @@ class TestFullPipelineWiring:
         polish_names = {p.name for p in polish_params}
         assert polish_names == {"BreakBeforeBraces"}
 
-    @patch("src.optimization_engine.phased.run_nevergrad_optimization")
-    @patch("src.optimization_engine.phased.run_island_ga")
-    def test_phased_optimization_runs_all_phases(self, mock_ga, mock_ng):
-        """Phased optimization runs resolve, structure, and polish phases."""
-        from src.optimization_engine.phased import run_phased_optimization
-
-        mock_ga.return_value = Individual(config={}, fitness=1.0)
-        mock_ng.return_value = OptimizationResult(best_config={}, best_fitness=0.0)
-
-        analysis = {
-            "IndentWidth": DetectedOption(4, "guessed", "resolve"),
-            "UseTab": DetectedOption(False, "detected", "structure"),
-            "BreakBeforeBraces": DetectedOption("Attach", "detected", "polish"),
-        }
-        lookups = _make_lookups(
-            json_options={
-                "IndentWidth": {"possible_values": [2, 4, 8]},
-                "UseTab": {"possible_values": [True, False]},
-                "BreakBeforeBraces": {"possible_values": ["Attach", "Allman"]},
-            }
-        )
-        ss = build_search_space(_make_base_options(), lookups, analysis)
-
-        def fitness(_config: dict[str, Any]) -> float:
-            return 0.0
-
-        result = run_phased_optimization(
-            search_space=ss,
-            fitness_fn=fitness,
-            initial_config={"IndentWidth": 4, "UseTab": False},
-            num_islands=1,
-            population_size=4,
-            num_workers=1,
-        )
-        # All three phases should have been attempted
-        assert result.best_fitness == 0.0
-
-    def test_cli_wiring_phased_passes_polish_undetect(self):
-        """CLI passes polish_undetect=True only for phased optimizer."""
+    def test_cli_wiring_iterative_passes_polish_undetect(self):
+        """CLI passes polish_undetect=True only for iterative optimizer."""
         # This is verified in test_main_cli.py, but we assert the invariant here.
-        assert (
-            "phased" == "phased"
-        )  # placeholder — actual wiring tested in test_main_cli
         # The key invariant: build_search_space accepts polish_undetect
         lookups = _make_lookups()
         ss = build_search_space(_make_base_options(), lookups, polish_undetect=True)
@@ -225,7 +180,7 @@ class TestFullPipelineWiring:
         assert ss.parameters["PenaltyExcessCharacter"].fixed is True
 
     def test_cli_wiring_genetic_does_not_pass_polish_undetect(self):
-        """Non-phased optimizers default to polish_undetect=False."""
+        """Non-iterative optimizers default to polish_undetect=False."""
         lookups = _make_lookups(
             json_options={"ColumnLimit": {"possible_values": [80, 100]}}
         )
@@ -315,7 +270,7 @@ class TestFullPipelineWiring:
         assert ss.parameters["PenaltyExcessCharacter"].tier == "structure"
 
     def test_full_pipeline_data_flow(self):
-        """End-to-end: analysis -> impact -> search_space -> phased optimization."""
+        """End-to-end: analysis -> impact -> search_space -> iterative optimization."""
         # Step 1: Analysis produces detected options
         analysis = {
             "IndentWidth": DetectedOption(4, "guessed", "resolve"),

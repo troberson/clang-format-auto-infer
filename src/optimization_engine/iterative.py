@@ -6,8 +6,8 @@ unlocks them in batches. Repeats until no impactful options remain or all
 options are exhausted.
 
 Each optimization step splits parameters by type: GA for integers,
-nevergrad for categoricals/booleans (reuses _run_phase from phased).
-Termination is convergence-based — no budget limits.
+nevergrad for categoricals/booleans. Termination is convergence-based —
+no budget limits.
 """
 
 from __future__ import annotations

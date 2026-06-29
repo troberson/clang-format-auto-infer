@@ -21,7 +21,6 @@ from src.optimization_engine import (
     run_island_ga,
     run_iterative_optimization,
     run_nevergrad_optimization,
-    run_phased_optimization,
 )
 from src.clang_format_adapter import (
     build_search_space,
@@ -30,7 +29,6 @@ from src.clang_format_adapter import (
 )
 from src.analyze_conventions import (
     analyze_with_metadata,
-    measure_impact,
     measure_remaining_impact,
 )
 from src.utils import run_command
@@ -412,42 +410,6 @@ def cmd_optimize(args: argparse.Namespace) -> None:
             temp_repo_paths.append(temp_dir)
         print("Temporary repositories prepared.", file=sys.stderr)
 
-        # Empirical impact measurement for phased optimizer.
-        # Determines which detected options are high-impact (structure) vs
-        # low-impact (polish) by running a lightweight nevergrad optimization.
-        if args.optimizer == "phased" and analysis_results:
-            print(
-                "\nMeasuring empirical impact of detected options...",
-                file=sys.stderr,
-            )
-            impact_tiers = measure_impact(
-                repo_path=temp_repo_paths[0],
-                analysis_results=analysis_results,
-                base_options=options_info,
-                lookups=lookups,
-                process_id=0,
-                debug=debug_mode,
-                file_sample_percentage=args.file_sample_percentage,
-                random_seed=RANDOM_SEED,
-            )
-            # Override tiers with empirical results
-            for name, tier in impact_tiers.items():
-                if name in analysis_results:
-                    analysis_results[name].tier = tier
-            structure_count = sum(
-                1 for v in analysis_results.values() if v.tier == "structure"
-            )
-            resolve_count = sum(
-                1 for v in analysis_results.values() if v.tier == "resolve"
-            )
-            polish_count = sum(
-                1 for v in analysis_results.values() if v.tier == "polish"
-            )
-            print(
-                f"  Impact tiers: resolve={resolve_count}, structure={structure_count}, polish={polish_count}",
-                file=sys.stderr,
-            )
-
         # No need for multiprocessing.Manager or shared counter for Nevergrad anymore
         # as the executor handles process management and repo path assignment is now
         # based on the worker's process ID directly.
@@ -457,13 +419,12 @@ def cmd_optimize(args: argparse.Namespace) -> None:
         optimized_options_info = None
 
         # Build search space and fitness function.
-        # Phased unlocks undetected options for polish; iterative starts with
-        # detected mutable and expands empirically.
+        # Iterative starts with detected mutable and expands empirically.
         search_space = build_search_space(
             options_info,
             lookups,
             analysis_results,
-            polish_undetect=args.optimizer in ("phased", "iterative"),
+            polish_undetect=args.optimizer == "iterative",
         )
         initial_config = {k: v.get("value") for k, v in options_info.items()}
 
@@ -528,20 +489,6 @@ def cmd_optimize(args: argparse.Namespace) -> None:
                 optimizer_name=args.ng_optimizer,
                 debug=debug_mode,
                 initial_config=initial_config,
-            )
-            optimized_options_info = config_to_flat_options(
-                result.best_config, options_info
-            )
-        elif args.optimizer == "phased":
-            result = run_phased_optimization(
-                search_space=search_space,
-                fitness_fn=fitness_fn,
-                initial_config=initial_config,
-                num_islands=args.islands,
-                population_size=args.population_size,
-                num_workers=num_jobs,
-                convergence_threshold=args.convergence_threshold,
-                debug=debug_mode,
             )
             optimized_options_info = config_to_flat_options(
                 result.best_config, options_info
@@ -661,18 +608,18 @@ def cmd_fetch_options(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
-def _warn_unused_phased_flags(args: argparse.Namespace) -> None:
-    """Warn about and override GA/nevergrad-specific flags for phased/iterative optimizer.
+def _warn_unused_iterative_flags(args: argparse.Namespace) -> None:
+    """Warn about and override GA/nevergrad-specific flags for iterative optimizer.
 
-    When --optimizer phased or --optimizer iterative is selected, the following
+    When --optimizer iterative is selected, the following
     flags are ignored: --iterations, --population-size, --islands, --polish-passes,
-    --migration-interval, --ng-optimizer. These optimizers use their own internal defaults.
+    --migration-interval, --ng-optimizer. Iterative uses its own internal defaults.
 
     Replaces the unused values with optimizer-appropriate defaults so that
     downstream code doesn't need special casing.
     """
     unused = []
-    # GA-specific flags that phased doesn't use
+    # GA-specific flags that iterative doesn't use
     if hasattr(args, "iterations"):
         unused.append("--iterations")
         args.iterations = 100
@@ -688,13 +635,13 @@ def _warn_unused_phased_flags(args: argparse.Namespace) -> None:
     if hasattr(args, "migration_interval"):
         unused.append("--migration-interval")
         args.migration_interval = 15
-    # Nevergrad-specific flags that phased manages internally
+    # Nevergrad-specific flags that iterative manages internally
     if hasattr(args, "ng_optimizer"):
         unused.append("--ng-optimizer")
         args.ng_optimizer = "TwoPointsDE"
 
     if unused:
-        optimizer_name = getattr(args, "optimizer", "phased")
+        optimizer_name = getattr(args, "optimizer", "iterative")
         print(
             f"Warning: --optimizer {optimizer_name} ignores: {', '.join(unused)}. {optimizer_name.capitalize()} uses automatic internal defaults.",
             file=sys.stderr,
@@ -740,9 +687,9 @@ def main() -> None:
     )
     _ = opt_parser.add_argument(
         "--optimizer",
-        choices=["genetic", "nevergrad", "phased", "iterative"],
+        choices=["genetic", "nevergrad", "iterative"],
         default="genetic",
-        help="Choose the optimization algorithm (genetic, nevergrad, phased, or iterative). Default: genetic.",
+        help="Choose the optimization algorithm (genetic, nevergrad, or iterative). Default: genetic.",
     )
     _ = opt_parser.add_argument(
         "--iterations",
@@ -843,8 +790,8 @@ def main() -> None:
     args = parser.parse_args()
 
     # Validate phased/iterative optimizer flags.
-    if hasattr(args, "optimizer") and args.optimizer in ("phased", "iterative"):
-        _warn_unused_phased_flags(args)
+    if hasattr(args, "optimizer") and args.optimizer == "iterative":
+        _warn_unused_iterative_flags(args)
 
     if args.command == "fetch-options":
         cmd_fetch_options(args)

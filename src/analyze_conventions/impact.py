@@ -19,7 +19,7 @@ from ..clang_format_parser import generate_clang_format_config
 from ..data_classes import GeneticAlgorithmLookups
 from ..optimization_engine.types import ParameterDef, SearchSpace
 from ..optimization_engine.nevergrad import run_nevergrad_optimization
-from ..optimization_engine.phased import NG_SAFETY_BUDGET
+from ..optimization_engine.iterative import NG_SAFETY_BUDGET
 
 # Curated penalty values shared with clang_format_adapter.
 CURATED_PENALTY_VALUES: list[int] = [2, 10, 50, 150, 1000, 10000]
