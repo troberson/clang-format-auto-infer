@@ -315,7 +315,9 @@ def run_clang_format_and_count_changes(
         return total_changes
 
     finally:
-        # Reset the repository changes
+        # Reset the repository changes. If this fails, the repo is left dirty
+        # and subsequent evaluations will return incorrect fitness=0.
+        # Raise ClangFormatWorkerError so the caller knows this worker is broken.
         git_restore_cmd = ["git", "restore", "."]
         try:
             _ = run_command(
@@ -333,10 +335,7 @@ def run_clang_format_and_count_changes(
                 isinstance(e, subprocess.CalledProcessError) and e.stderr
             ):  # pragma: no cover
                 stderr_msg = f" (stderr: {e.stderr.strip()})"
-            print(
-                f"Worker {process_id}: Error resetting git repository: {e}{stderr_msg}",
-                file=sys.stderr,
-            )
+            raise ClangFormatWorkerError(f"git restore failed: {e}{stderr_msg}") from e
 
         # Clean up the temporary config file
         if os.path.exists(temp_config_file):

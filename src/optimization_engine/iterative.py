@@ -301,16 +301,20 @@ def run_iterative_optimization(
                 dbg("optimize", "No remaining fixed options. Done.")
             break
 
-        # Measure impact of remaining options, excluding penalty parameters.
-        # Penalties are relative weights — testing one in isolation is meaningless.
+        # Measure impact of remaining options, excluding penalty parameters
+        # and forced options. Penalties are relative weights — testing one in
+        # isolation is meaningless. Forced options are certain and must not change.
         penalty_names = [p.name for p in remaining_fixed if _is_penalty_option(p.name)]
+        forced_names = [p.name for p in remaining_fixed if p.confidence == "forced"]
         candidate_names = [
-            p.name for p in remaining_fixed if not _is_penalty_option(p.name)
+            p.name
+            for p in remaining_fixed
+            if not _is_penalty_option(p.name) and p.confidence != "forced"
         ]
         if debug:
             dbg(
                 "impact",
-                f"Measuring impact of {len(candidate_names)} remaining options ({len(penalty_names)} penalties excluded)...",
+                f"Measuring impact of {len(candidate_names)} remaining options ({len(penalty_names)} penalties, {len(forced_names)} forced excluded)...",
             )
 
         scores = impact_fn(

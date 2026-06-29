@@ -99,6 +99,38 @@ class TestLoadJsonOptionValues:
         result = load_json_option_values(str(f))
         assert result["Language"]["possible_values"] is None
 
+    def test_javascript_options_excluded(self, tmp_path):
+        """JavaScript-only options are excluded from the lookup."""
+        data = [
+            {
+                "name": "InsertTrailingCommas",
+                "type": "TrailingCommaStyle",
+                "possible_values": ["None", "All"],
+            },
+            {
+                "name": "JavaScriptQuotes",
+                "type": "str",
+                "possible_values": ["PreferDouble"],
+            },
+            {
+                "name": "JavaScriptWrapImports",
+                "type": "bool",
+                "possible_values": [True, False],
+            },
+            {
+                "name": "ColumnLimit",
+                "type": "int",
+                "possible_values": [80, 120],
+            },
+        ]
+        f = tmp_path / "values.json"
+        f.write_text(json.dumps(data))
+        result = load_json_option_values(str(f))
+        assert "InsertTrailingCommas" not in result
+        assert "JavaScriptQuotes" not in result
+        assert "JavaScriptWrapImports" not in result
+        assert "ColumnLimit" in result
+
 
 class TestLoadForcedOptions:
     def test_valid_yaml_flat(self, tmp_path):

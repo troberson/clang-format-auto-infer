@@ -48,6 +48,17 @@ def load_json_option_values(file_path):
                     json_options_lookup["Language"]["possible_values"] = [
                         v for v in values if v != "None"
                     ]
+
+            # InsertTrailingCommas is JavaScript-only and conflicts with
+            # BinPackArguments. This tool only formats C/C++/ObjC files,
+            # so exclude it entirely.
+            # JavaScriptQuotes and JavaScriptWrapImports are also JS-only.
+            for js_option in (
+                "InsertTrailingCommas",
+                "JavaScriptQuotes",
+                "JavaScriptWrapImports",
+            ):
+                json_options_lookup.pop(js_option, None)
         print(f"Successfully loaded option values from '{file_path}'.", file=sys.stderr)
         return json_options_lookup
     except json.JSONDecodeError as e:

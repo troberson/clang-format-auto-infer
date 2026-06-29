@@ -83,6 +83,7 @@ def build_search_space(
                 possible_values=possible_values,
                 fixed=is_penalty or is_forced,
                 tier=tier,
+                confidence="forced" if is_forced else "detected",
             )
             continue
 

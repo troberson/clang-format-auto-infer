@@ -235,8 +235,10 @@ class TestRunClangFormatAndCountChanges:
             )
 
     @patch("src.repo_formatter.run_command")
-    def test_git_restore_error_logged(self, mock_run, tmp_path, capsys):
-        """When git restore fails, an error is printed but execution continues."""
+    def test_git_restore_error_raises(self, mock_run, tmp_path):
+        """When git restore fails, ClangFormatWorkerError is raised so the
+        caller knows the repo is dirty and subsequent evaluations would be
+        incorrect."""
         repo = str(tmp_path)
         os.makedirs(repo, exist_ok=True)
         mock_run.side_effect = [
@@ -245,12 +247,10 @@ class TestRunClangFormatAndCountChanges:
             _make_mock_result(stdout=""),
             subprocess.CalledProcessError(1, ["git", "restore"]),
         ]
-        result = run_clang_format_and_count_changes(
-            "BasedOnStyle: LLVM\n", repo, 1, False, 100.0, 42
-        )
-        assert result == 0
-        captured = capsys.readouterr()
-        assert "Error resetting git repository" in captured.err
+        with pytest.raises(ClangFormatWorkerError, match="git restore failed"):
+            _ = run_clang_format_and_count_changes(
+                "BasedOnStyle: LLVM\n", repo, 1, False, 100.0, 42
+            )
 
     @patch("src.repo_formatter.run_command")
     def test_debug_prints_cache_miss(self, mock_run, tmp_path, capsys):

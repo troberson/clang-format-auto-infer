@@ -19,6 +19,10 @@ class ParameterDef:
             - 'resolve': Guessed values needing empirical disambiguation.
             - 'structure': High-impact structural options.
             - 'polish': Lower-impact options for final tuning.
+        confidence: How certain the analyzer is about this value.
+            - 'forced': Analyzer is certain, must not be changed.
+            - 'detected': Analyzer detected from source, can be optimized.
+            - 'guessed': Analyzer guessed, needs empirical validation.
     """
 
     name: str
@@ -26,6 +30,7 @@ class ParameterDef:
     possible_values: list[Any] = field(default_factory=list)
     fixed: bool = False
     tier: str = "polish"
+    confidence: str = "detected"
 
     @property
     def mutable(self) -> bool:
