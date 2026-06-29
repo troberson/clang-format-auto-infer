@@ -98,6 +98,32 @@ class TestGenerateClangFormatConfig:
         reparsed = parse_clang_format_options(regenerated)
         assert flat == reparsed
 
+    def test_qualifier_order_included_when_custom(self):
+        """QualifierOrder is included when QualifierAlignment is Custom."""
+        flat: dict[str, dict[str, str | Any]] = {
+            "QualifierAlignment": {"type": "str", "value": "Custom"},
+            "QualifierOrder": {"type": "list", "value": ["inline", "static"]},
+        }
+        result = generate_clang_format_config(flat)
+        assert "QualifierOrder" in result
+
+    def test_qualifier_order_excluded_when_not_custom(self):
+        """QualifierOrder is excluded when QualifierAlignment is not Custom."""
+        flat: dict[str, dict[str, str | Any]] = {
+            "QualifierAlignment": {"type": "str", "value": "Leading"},
+            "QualifierOrder": {"type": "list", "value": ["inline", "static"]},
+        }
+        result = generate_clang_format_config(flat)
+        assert "QualifierOrder" not in result
+
+    def test_qualifier_order_missing_when_no_alignment(self):
+        """QualifierOrder is excluded when QualifierAlignment is absent."""
+        flat: dict[str, dict[str, str | Any]] = {
+            "QualifierOrder": {"type": "list", "value": ["inline", "static"]},
+        }
+        result = generate_clang_format_config(flat)
+        assert "QualifierOrder" not in result
+
     def test_empty_input(self):
         result = generate_clang_format_config({})
         assert result.strip() == "{}"

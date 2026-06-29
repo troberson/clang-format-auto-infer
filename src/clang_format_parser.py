@@ -101,10 +101,19 @@ def generate_clang_format_config(flat_options_info: dict[str, OptionInfo]) -> st
     """
     nested_config: NestedConfig = {}
 
+    # Conditionally include QualifierOrder only when QualifierAlignment is Custom.
+    # clang-format rejects QualifierOrder otherwise with "unknown key" error.
+    include_qualifier_order = (
+        flat_options_info.get("QualifierAlignment", {}).get("value") == "Custom"
+    )
+
     # Sort keys to ensure consistent output order, especially for nested structures
     # This helps with reproducibility of the generated YAML.
     for full_path in sorted(flat_options_info.keys()):
         info = flat_options_info[full_path]
+        # Skip QualifierOrder when QualifierAlignment is not Custom
+        if full_path == "QualifierOrder" and not include_qualifier_order:
+            continue
         parts = full_path.split(".")
         current_level = nested_config
         for i, part in enumerate(parts):
