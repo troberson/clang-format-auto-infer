@@ -91,9 +91,13 @@ def measure_remaining_impact(
     """
     # Build search space from candidate options.
     parameters: dict[str, ParameterDef] = {}
+    skipped_not_in_base = 0
+    skipped_no_values = 0
+    skipped_single_value = 0
 
     for full_path in candidate_names:
         if full_path not in base_options:
+            skipped_not_in_base += 1
             continue
 
         json_info = lookups.json_options_lookup.get(full_path, {})
@@ -103,10 +107,12 @@ def measure_remaining_impact(
             if full_path.startswith("Penalty"):
                 possible_values = list(CURATED_PENALTY_VALUES)
             else:
+                skipped_no_values += 1
                 continue
 
         # Skip if only one possible value.
         if len(possible_values) <= 1:
+            skipped_single_value += 1
             continue
 
         parameters[full_path] = ParameterDef(
@@ -114,6 +120,15 @@ def measure_remaining_impact(
             param_type=base_options[full_path]["type"],
             possible_values=list(possible_values),
             fixed=False,
+        )
+
+    if debug:  # pragma: no cover
+        from ..utils import dbg
+
+        dbg(
+            "impact",
+            f"Impact scan: {len(candidate_names)} candidates -> {len(parameters)} optimizable ("
+            + f"{skipped_not_in_base} not in base, {skipped_no_values} no values, {skipped_single_value} single value)",
         )
 
     if not parameters:
@@ -186,6 +201,13 @@ def measure_remaining_impact(
 
     # Measure per-option impact by comparing best to initial.
     initial_fitness = fitness(initial_config)
+    if debug:  # pragma: no cover
+        from ..utils import dbg
+
+        dbg(
+            "impact",
+            f"Impact scan: initial fitness={initial_fitness}, best fitness={result.best_fitness}",
+        )
     scores: list[ImpactScore] = []
     for name in parameters:
         best_val = result.best_config.get(name)
@@ -200,6 +222,15 @@ def measure_remaining_impact(
 
     # Sort by delta descending (most impactful first).
     scores.sort(key=lambda s: s.fitness_delta, reverse=True)
+
+    if debug:  # pragma: no cover
+        from ..utils import dbg
+
+        dbg(
+            "impact",
+            f"Impact scan: {len(scores)} options changed, top deltas: {[s.fitness_delta for s in scores[:5]]}",
+        )
+
     return scores
 
 
