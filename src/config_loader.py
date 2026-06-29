@@ -138,10 +138,26 @@ def _fill_missing_sub_options(json_options_lookup: dict[str, Any]) -> None:
                 if existing.get("possible_values"):
                     continue
                 # Option exists in JSON but has no possible_values.
-                # Only fill booleans — integers get a wide range of valid
-                # values depending on the option, so a generic range is unsafe.
+                # Infer from dump-config type and JSON type metadata.
                 if py_type == "bool":  # pragma: no cover
                     existing["possible_values"] = ["true", "false"]
+                elif py_type == "int":  # pragma: no cover
+                    # Generate values around the default with increasing distance.
+                    # This is a radial search: closer values are more likely to
+                    # be meaningful than arbitrary jumps to far values.
+                    json_type = existing.get("type", "")
+                    default = _value
+                    min_val = 0 if json_type in ("Unsigned", "unsigned") else -128
+                    max_val = 255 if json_type == "int8_t" else 65535
+                    # Generate offsets: 0, ±1, ±2, ±3, ±4
+                    offsets = [0, -1, 1, -2, 2, -3, 3, -4, 4]
+                    values = []
+                    for off in offsets:
+                        v = default + off
+                        if min_val <= v <= max_val:
+                            values.append(str(v))
+                    if values:
+                        existing["possible_values"] = values
                 continue
 
             # Only add new entries if the parent option exists in the JSON lookup.
@@ -150,7 +166,7 @@ def _fill_missing_sub_options(json_options_lookup: dict[str, Any]) -> None:
                 continue
             # Infer clang-format type from Python type.
             # Only fill booleans — integers are left without possible_values
-            # because a generic range is unsafe for options like ColumnLimit.
+            # because we don't have JSON type metadata for new entries.
             if py_type == "bool":
                 json_options_lookup[name] = {
                     "type": "bool",
