@@ -122,9 +122,24 @@ def run_clang_format_and_count_changes(
     temp_config_file = os.path.join(repo_path, f".clang-format.tmp.{thread_id}")
     error_config_dest = "/tmp/clang-format.yml"
 
-    # Write the configuration to the temporary file path inside the repo
+    # Write the configuration to the temporary file path inside the repo.
+    # Use os.fsync to ensure the data is on disk before clang-format reads it.
+    # This prevents a race condition where clang-format opens the file before
+    # the write is fully flushed, especially on tmpfs with high parallelism.
     with open(temp_config_file, "w") as tmp_file:
         _ = tmp_file.write(config_string)
+        tmp_file.flush()
+        os.fsync(tmp_file.fileno())
+
+    # Verify the config file was written correctly before running clang-format.
+    # If the file is empty or missing, clang-format may silently fall back to
+    # defaults, producing misleading fitness scores.
+    if (
+        not os.path.exists(temp_config_file) or os.path.getsize(temp_config_file) == 0
+    ):  # pragma: no cover
+        raise ClangFormatWorkerError(
+            f"Config file {temp_config_file} is empty or missing after write."
+        )
 
     try:
         # Get cached file list (avoids repeated git ls-files calls)

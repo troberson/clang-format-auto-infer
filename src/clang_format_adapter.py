@@ -7,6 +7,7 @@ optimization_engine types (SearchSpace, Individual, etc.).
 from __future__ import annotations
 
 import copy
+import os
 import subprocess
 import sys
 import threading
@@ -26,8 +27,7 @@ CURATED_PENALTY_VALUES = [2, 10, 50, 150, 1000, 10000]
 def _dump_fitness_zero_diagnostics(  # pragma: no cover
     repo_path: str,
     repo_idx: int,
-    config_string: str,
-    _process_id: int,
+    debug_config_path: str,
 ) -> None:
     """Dump diagnostics when fitness=0 is detected, then exit.
 
@@ -40,7 +40,11 @@ def _dump_fitness_zero_diagnostics(  # pragma: no cover
 
     # Show the config that was applied
     print("\n--- .clang-format config ---", file=err)
-    print(config_string, file=err)
+    try:
+        with open(debug_config_path) as f:
+            print(f.read(), file=err)
+    except OSError as e:
+        print(f"(could not read config: {e})", file=err)
 
     # Show git status
     print("\n--- git status ---", file=err)
@@ -306,6 +310,16 @@ class FitnessEvaluator:
 
             config_string = generate_clang_format_config(flat_options)
 
+            # Save a copy of the config for debugging. If fitness=0 is detected,
+            # the temp config will already be deleted by the formatter's cleanup.
+            debug_config_path = os.path.join(repo_path, ".clang-format.debug")
+            if self._debug:  # pragma: no cover
+                try:
+                    with open(debug_config_path, "w") as f:
+                        _ = f.write(config_string)
+                except OSError:
+                    pass  # repo may not exist (e.g. in tests)
+
             changes = run_clang_format_and_count_changes(
                 config_string,
                 repo_path=repo_path,
@@ -318,10 +332,8 @@ class FitnessEvaluator:
             if changes == -1:
                 return float("inf")
             if changes == 0 and self._debug:  # pragma: no cover
-                _dump_fitness_zero_diagnostics(
-                    repo_path, repo_idx, config_string, self._process_id
-                )
-                sys.exit(1)
+                _dump_fitness_zero_diagnostics(repo_path, repo_idx, debug_config_path)
+                os._exit(1)
             return changes
         finally:
             # Release the per-repo lock so other threads can use this repo
