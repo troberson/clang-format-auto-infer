@@ -9,10 +9,10 @@ from __future__ import annotations
 
 import copy
 import random
-import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable
 
+from ..utils import dbg
 from .types import Individual, ParameterDef, SearchSpace
 
 # Fitness function signature: takes a config dict, returns a float (lower is better).
@@ -47,7 +47,7 @@ def mutate(
     fitness_fn: FitnessFn,
     rng: random.Random,
     debug: bool = False,
-    debug_prefix: str = "",
+    tag: str = "",
 ) -> Individual:
     """Mutate one random mutable parameter by exhaustively testing all values.
 
@@ -55,11 +55,7 @@ def mutate(
     """
     mutable = _get_mutable_options(individual.config, search_space)
     if not mutable:
-        if debug:
-            print(
-                f"{debug_prefix}No mutable options for mutation.",
-                file=sys.stderr,
-            )
+        dbg(tag, "No mutable options for mutation.")
         return Individual(
             config=copy.deepcopy(individual.config),
             fitness=float("inf"),
@@ -68,10 +64,7 @@ def mutate(
     param = rng.choice(mutable)
     if debug:
         current = individual.config.get(param.name)
-        print(
-            f"{debug_prefix}Mutating '{param.name}' (current: {current})...",
-            file=sys.stderr,
-        )
+        dbg(tag, f"Mutating '{param.name}' (current: {current})...")
 
     best_fitness = float("inf")
     best_values: list[Any] = []
@@ -82,10 +75,7 @@ def mutate(
         fitness = fitness_fn(config_copy)
 
         if debug:
-            print(
-                f"{debug_prefix}  '{param.name}'={value} -> fitness: {fitness}",
-                file=sys.stderr,
-            )
+            dbg(tag, f"  '{param.name}'={value} -> fitness: {fitness}")
 
         if fitness < best_fitness:
             best_fitness = fitness
@@ -98,9 +88,9 @@ def mutate(
     mutated_config[param.name] = best_value
 
     if debug:
-        print(
-            f"{debug_prefix}Best value for '{param.name}': {best_value} (fitness: {best_fitness})",
-            file=sys.stderr,
+        dbg(
+            tag,
+            f"Best value for '{param.name}': {best_value} (fitness: {best_fitness})",
         )
 
     return Individual(config=mutated_config, fitness=best_fitness)
@@ -113,7 +103,7 @@ def evolve_island_generation(
     fitness_fn: FitnessFn,
     rng: random.Random,
     debug: bool = False,
-    debug_prefix: str = "",
+    tag: str = "",
 ) -> list[Individual]:
     """Evolve one island for one generation.
 
@@ -133,9 +123,9 @@ def evolve_island_generation(
         if len(population) < 2:
             child_config = copy.deepcopy(population[0].config)
             if debug:
-                print(
-                    f"{debug_prefix}Warning: population too small for crossover. Mutating copy of best.",
-                    file=sys.stderr,
+                dbg(
+                    tag,
+                    "Warning: population too small for crossover. Mutating copy of best.",
                 )
         else:
             p1 = rng.choice(population).config
@@ -143,7 +133,7 @@ def evolve_island_generation(
             child_config = crossover(p1, p2, rng)
 
         child = Individual(config=child_config)
-        mutated = mutate(child, search_space, fitness_fn, rng, debug, debug_prefix)
+        mutated = mutate(child, search_space, fitness_fn, rng, debug, tag)
         new_candidates.append(mutated)
 
     # Selection: keep the best `island_size`
@@ -162,8 +152,7 @@ def perform_migration(
     replacing a random individual there.
     """
     if len(populations) < 2:
-        if debug:
-            print("Skipping migration: less than 2 islands.", file=sys.stderr)
+        dbg("ga", "Skipping migration: less than 2 islands.")
         return
 
     migrants: list[tuple[int, Individual]] = []
@@ -172,12 +161,10 @@ def perform_migration(
             best = min(pop, key=lambda ind: ind.fitness)
             migrants.append((i, best))
         elif debug:
-            print(
-                f"Warning: island {i} is empty, cannot select migrant.", file=sys.stderr
-            )
+            dbg("ga", f"Warning: island {i} is empty, cannot select migrant.")
 
     if debug:
-        print(f"Performing migration with {len(migrants)} migrants.", file=sys.stderr)
+        dbg("ga", f"Performing migration with {len(migrants)} migrants.")
 
     for source_idx, migrant in migrants:
         target_idx = source_idx
@@ -188,18 +175,18 @@ def perform_migration(
         if not target_pop:
             target_pop.append(migrant)
             if debug:
-                print(
+                dbg(
+                    "ga",
                     f"  Migrant from island {source_idx} added to empty island {target_idx}.",
-                    file=sys.stderr,
                 )
         else:
             to_replace = rng.choice(target_pop)
             target_pop.remove(to_replace)
             target_pop.append(migrant)
             if debug:
-                print(
+                dbg(
+                    "ga",
                     f"  Migrant from island {source_idx} replaced an individual in island {target_idx}.",
-                    file=sys.stderr,
                 )
 
 
@@ -211,12 +198,11 @@ def _evolve_island_task(
     fitness_fn: FitnessFn,
     rng: random.Random,
     debug: bool,
-    debug_prefix: str,
+    tag: str,
 ) -> tuple[int, list[Individual], float]:
     """Evolve one island and return (index, new_population, best_fitness)."""
-    island_prefix = f"{debug_prefix}Island {island_idx + 1}: "
     new_pop = evolve_island_generation(
-        population, island_size, search_space, fitness_fn, rng, debug, island_prefix
+        population, island_size, search_space, fitness_fn, rng, debug, tag
     )
     best_fitness = min(ind.fitness for ind in new_pop) if new_pop else float("inf")
     return island_idx, new_pop, best_fitness
@@ -258,7 +244,7 @@ def _initialize_population(
     island_size: int,
     rng: random.Random,
     diversity_rate: float = 0.5,
-) -> tuple[list[Individual], int]:
+) -> list[Individual]:
     """Create a diverse initial population for one island.
 
     Individual 0 is an exact copy of *initial_config* (anchor baseline).
@@ -280,12 +266,11 @@ def _initialize_population(
             Actually capped by MAX_MUTABLE_RANDOMIZED.
 
     Returns:
-        Tuple of (population list, number of fitness evaluations performed).
+        List of individuals.
     """
     mutable = _get_mutable_options(initial_config, search_space)
     effective_rate = _effective_diversity_rate(diversity_rate, len(mutable))
     pop: list[Individual] = []
-    eval_count = 0
 
     for i in range(island_size):
         if i == 0 or not mutable or effective_rate <= 0.0:
@@ -298,25 +283,23 @@ def _initialize_population(
                     config[param.name] = rng.choice(param.possible_values)
 
         fitness = fitness_fn(config)
-        eval_count += 1
         pop.append(Individual(config=config, fitness=fitness))
 
-    return pop, eval_count
+    return pop
 
 
-def run_island_ga(
+def run_island_ga(  # noqa: PLR0913
     initial_config: dict[str, Any],
     search_space: SearchSpace,
     fitness_fn: FitnessFn,
     num_islands: int,
     population_size: int,
-    num_iterations: int,
+    num_iterations: int | None,
     migration_interval: int = 15,
     debug: bool = False,
     random_seed: int | None = None,
     convergence_threshold: int | None = None,
-    budget: int | None = None,
-    debug_prefix: str = "",
+    tag: str = "",
     min_improvement_ratio: float = 0.001,
     num_workers: int = 1,
     diversity_rate: float = 0.5,
@@ -329,15 +312,14 @@ def run_island_ga(
         fitness_fn: Callable that scores a config dict (lower is better).
         num_islands: Number of parallel islands.
         population_size: Total population across all islands.
-        num_iterations: Number of generations to evolve.
+        num_iterations: Number of generations to evolve. None means run until
+            convergence (requires convergence_threshold to be set).
         migration_interval: Generations between migrations.
         debug: Print verbose output.
         random_seed: Seed for reproducibility.
         convergence_threshold: If set, stop early when no improvement occurs
             for this many consecutive generations. None means run full iterations.
-        budget: If set, stop when this many fitness evaluations are exceeded.
-            None means no budget limit.
-        debug_prefix: Prefix prepended to all debug print lines.
+        tag: Tag used for debug output (e.g., phase name).
         min_improvement_ratio: Minimum fractional improvement over current best
             to reset the convergence counter. Improvements smaller than this
             threshold are treated as noise and do not reset the counter.
@@ -352,6 +334,11 @@ def run_island_ga(
     Returns:
         The best individual found.
     """
+    # Safety cap: if num_iterations is None, use a large default.
+    # Convergence is the real limiter; this is a runaway guard.
+    if num_iterations is None:
+        num_iterations = 10_000
+
     rng = random.Random(random_seed)
 
     num_islands = max(1, num_islands)
@@ -361,16 +348,14 @@ def run_island_ga(
 
     # Initialize diverse populations — each island gets unique starting individuals.
     populations: list[list[Individual]] = []
-    total_init_evals = 0
     best_init_fitness = float("inf")
     best_init_config: dict[str, Any] | None = None
 
     for _ in range(num_islands):
-        pop, evals = _initialize_population(
+        pop = _initialize_population(
             initial_config, search_space, fitness_fn, island_size, rng, diversity_rate
         )
         populations.append(pop)
-        total_init_evals += evals
         for ind in pop:
             if ind.fitness < best_init_fitness:
                 best_init_fitness = ind.fitness
@@ -387,7 +372,6 @@ def run_island_ga(
         [min(ind.fitness for ind in pop)] for pop in populations
     ]
     no_improve_count = 0
-    eval_count = total_init_evals
 
     for iteration in range(num_iterations):
         prev_best = best_overall.fitness
@@ -411,7 +395,7 @@ def run_island_ga(
                         fitness_fn,
                         island_rngs[i],
                         debug,
-                        debug_prefix,
+                        tag,
                     ): i
                     for i, pop in enumerate(populations)
                 }
@@ -429,12 +413,9 @@ def run_island_ga(
                             config=copy.deepcopy(best_in_island.config),
                             fitness=best_in_island.fitness,
                         )
-
-                eval_count += island_size * num_islands
         else:
             # Sequential execution (original behavior)
             for i, pop in enumerate(populations):
-                island_prefix = f"{debug_prefix}Island {i + 1}: "
                 new_pop = evolve_island_generation(
                     pop,
                     island_size,
@@ -442,10 +423,9 @@ def run_island_ga(
                     fitness_fn,
                     island_rngs[i],
                     debug,
-                    island_prefix,
+                    tag,
                 )
                 populations[i] = new_pop
-                eval_count += island_size
 
                 best_in_island = min(new_pop, key=lambda ind: ind.fitness)
                 fitness_history[i].append(best_in_island.fitness)
@@ -473,22 +453,14 @@ def run_island_ga(
                 if convergence_threshold is not None
                 else ""
             )
-            print(
-                f"{debug_prefix}Iter {iteration + 1}/{num_iterations} fitness={best_overall.fitness}{conv_str}",
-                file=sys.stderr,
+            dbg(
+                tag,
+                f"Iter {iteration + 1} fitness={best_overall.fitness}{conv_str}",
+                summary=True,
             )
 
         # Early termination on perfect fitness
         if best_overall.fitness == 0:
-            break
-
-        # Budget check
-        if budget is not None and eval_count >= budget:
-            if debug:
-                print(
-                    f"{debug_prefix}Budget exhausted after {iteration + 1} iterations ({eval_count} evals).",
-                    file=sys.stderr,
-                )
             break
 
         if (
@@ -496,10 +468,7 @@ def run_island_ga(
             and no_improve_count >= convergence_threshold
         ):
             if debug:
-                print(
-                    f"{debug_prefix}Converged after {iteration + 1} iterations.",
-                    file=sys.stderr,
-                )
+                dbg(tag, f"Converged after {iteration + 1} iterations.")
             break
 
         # Migration

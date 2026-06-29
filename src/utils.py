@@ -2,6 +2,18 @@ import subprocess
 import sys
 
 
+def dbg(tag: str, msg: str, *, summary: bool = False) -> None:
+    """Print a debug message with a consistent [tag] prefix.
+
+    Args:
+        tag: Phase or component name (e.g. 'resolve', 'ga', 'ng').
+        msg: The message to print.
+        summary: If True, prefix with 'summary:' for easy grep of progress lines.
+    """
+    prefix = "summary: " if summary else ""
+    print(f"[{tag}] {prefix}{msg}", file=sys.stderr)
+
+
 def run_command(
     cmd,
     capture_output=False,

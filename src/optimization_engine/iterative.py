@@ -7,14 +7,15 @@ options are exhausted.
 
 Each optimization step splits parameters by type: GA for integers,
 nevergrad for categoricals/booleans (reuses _run_phase from phased).
+Termination is convergence-based — no budget limits.
 """
 
 from __future__ import annotations
 
 import copy
-import sys
 from typing import Any, Callable
 
+from ..utils import dbg
 from .ga import run_island_ga
 from .nevergrad import run_nevergrad_optimization
 from .types import OptimizationResult, ParameterDef, SearchSpace
@@ -31,26 +32,11 @@ IMPACT_THRESHOLD = 0.5
 # Minimum fitness improvement ratio to consider an iteration impactful.
 MIN_IMPROVEMENT_RATIO = 0.01
 
-# Maximum budget to spend on a single impact measurement.
-MAX_IMPACT_BUDGET = 100
-
-# Fraction of remaining budget to allocate for impact measurement.
-IMPACT_BUDGET_FRACTION = 3
-
-# Minimum budget to reserve for the next iteration.
-MIN_NEXT_ITERATION_BUDGET = 20
-
-# Minimum budget required to enter the optimization loop.
-MIN_LOOP_BUDGET = 10
-
-# Minimum budget to allocate for an optimizer (GA or nevergrad) sub-run.
-MIN_OPT_SUB_BUDGET = 5
-
 # Convergence threshold for GA and nevergrad sub-runs.
 CONVERGENCE_THRESHOLD = 20
 
-# Minimum budget required to attempt a penalty polish pass.
-MIN_PENALTY_POLISH_BUDGET = 30
+# Safety cap for nevergrad evaluations. Convergence fires first in practice.
+NG_SAFETY_BUDGET = 10_000
 
 
 def _is_penalty_option(name: str) -> bool:
@@ -106,29 +92,30 @@ def _optimize_batch(
     search_space: SearchSpace,
     fitness_fn: FitnessFn,
     current_config: dict[str, Any],
-    budget: int,
     num_islands: int,
     population_size: int,
     num_workers: int,
-    min_sub_budget: int = MIN_OPT_SUB_BUDGET,
     convergence_threshold: int = CONVERGENCE_THRESHOLD,
     debug: bool = False,
-    debug_prefix: str = "",
+    tag: str = "",
     min_improvement_ratio: float = 0.001,
 ) -> OptimizationResult:
     """Optimize the currently mutable parameters in the search space.
 
     Splits by type: GA for integers, nevergrad for categoricals.
+    Termination is convergence-based — no budget limits.
 
     Args:
         search_space: Current search space with mutable parameters.
         fitness_fn: Fitness evaluation function.
         current_config: Starting configuration.
-        budget: Evaluation budget for this step.
         num_islands: GA island count.
         population_size: GA population size.
         num_workers: nevergrad worker count.
+        convergence_threshold: Stop optimizer sub-runs early when no improvement.
         debug: Enable verbose output.
+        tag: Tag used for debug output (e.g., phase name).
+        min_improvement_ratio: Minimum improvement ratio for convergence.
 
     Returns:
         OptimizationResult with best config, fitness, and evaluations used.
@@ -141,37 +128,23 @@ def _optimize_batch(
             evaluations_used=1,
         )
 
-    # Wrap fitness to count actual evaluations.
-    eval_count = [0]
-
-    def counting_fitness(cfg: dict[str, Any]) -> float:
-        eval_count[0] += 1
-        return fitness_fn(cfg)
-
     # Split by type.
     integer_params = [p for p in mutable if p.param_type == "int"]
     categorical_params = [p for p in mutable if p.param_type != "int"]
 
-    # Split budget proportionally.
-    active = (1 if integer_params else 0) + (1 if categorical_params else 0)
-    ga_budget = budget // active if active > 0 else 0
-    ng_budget = budget - ga_budget if categorical_params else 0
-
-    # Ensure minimum budgets.
-    if integer_params and ga_budget < min_sub_budget:
-        ga_budget = min_sub_budget
-        ng_budget = max(0, budget - ga_budget)
-    if categorical_params and ng_budget < min_sub_budget:
-        ng_budget = min_sub_budget
-        ga_budget = max(0, budget - ng_budget)
-
     current = copy.deepcopy(current_config)
-    best_fitness = counting_fitness(copy.deepcopy(current))
+    best_fitness = fitness_fn(copy.deepcopy(current))
+    total_evals = 1  # Initial fitness evaluation
+
+    # Wrap fitness to count evaluations.
+    def counting_fitness(cfg: dict[str, Any]) -> float:
+        nonlocal total_evals
+        total_evals += 1
+        return fitness_fn(cfg)
 
     # Run GA for integer parameters.
     if integer_params:
         ga_subspace = _build_subspace(search_space, integer_params)
-        ga_iterations = max(5, ga_budget // max(1, population_size))
 
         best_ga = run_island_ga(
             initial_config=current,
@@ -179,11 +152,10 @@ def _optimize_batch(
             fitness_fn=counting_fitness,
             num_islands=num_islands,
             population_size=population_size,
-            num_iterations=ga_iterations,
+            num_iterations=None,
             debug=debug,
-            budget=ga_budget,
             convergence_threshold=convergence_threshold,
-            debug_prefix=debug_prefix,
+            tag=tag,
             min_improvement_ratio=min_improvement_ratio,
             num_workers=num_workers,
         )
@@ -192,7 +164,7 @@ def _optimize_batch(
             current = copy.deepcopy(best_ga.config)
             best_fitness = best_ga.fitness
             if debug:
-                print(f"  GA improved fitness: {best_fitness}", file=sys.stderr)
+                dbg(tag, f"GA improved fitness: {best_fitness}")
 
     # Run nevergrad for categorical parameters.
     if categorical_params:
@@ -200,28 +172,25 @@ def _optimize_batch(
 
         best_ng = run_nevergrad_optimization(
             search_space=ng_subspace,
-            objective=counting_fitness,
-            budget=ng_budget,
+            objective=fitness_fn,
+            budget=NG_SAFETY_BUDGET,
             num_workers=num_workers,
             debug=debug,
             initial_config=current,
             convergence_threshold=convergence_threshold,
-            debug_prefix=debug_prefix,
+            tag=tag,
         )
 
         if best_ng.best_fitness < best_fitness:
             current = copy.deepcopy(best_ng.best_config)
             best_fitness = best_ng.best_fitness
             if debug:
-                print(
-                    f"  nevergrad improved fitness: {best_fitness}",
-                    file=sys.stderr,
-                )
+                dbg(tag, f"nevergrad improved fitness: {best_fitness}")
 
     return OptimizationResult(
         best_config=current,
         best_fitness=best_fitness,
-        evaluations_used=eval_count[0],
+        evaluations_used=total_evals,
     )
 
 
@@ -249,7 +218,6 @@ def run_iterative_optimization(
     search_space: SearchSpace,
     fitness_fn: FitnessFn,
     initial_config: dict[str, Any],
-    total_budget: int,
     impact_fn: Callable[..., list[Any]],
     impact_kwargs: dict[str, Any],
     num_islands: int = 1,
@@ -258,12 +226,6 @@ def run_iterative_optimization(
     max_batch_fraction: float = MAX_BATCH_FRACTION,
     impact_threshold: float = IMPACT_THRESHOLD,
     min_improvement_ratio: float = MIN_IMPROVEMENT_RATIO,
-    max_impact_budget: int = MAX_IMPACT_BUDGET,
-    impact_budget_fraction: int = IMPACT_BUDGET_FRACTION,
-    min_next_iteration_budget: int = MIN_NEXT_ITERATION_BUDGET,
-    min_loop_budget: int = MIN_LOOP_BUDGET,
-    min_opt_sub_budget: int = MIN_OPT_SUB_BUDGET,
-    min_penalty_polish_budget: int = MIN_PENALTY_POLISH_BUDGET,
     convergence_threshold: int = CONVERGENCE_THRESHOLD,
     debug: bool = False,
 ) -> OptimizationResult:
@@ -273,16 +235,17 @@ def run_iterative_optimization(
     1. Optimize currently mutable parameters.
     2. If remaining fixed options exist, measure their impact.
     3. Select top batch and unlock.
-    4. Repeat until no impactful options or budget exhausted.
+    4. Repeat until no impactful options remain or all options exhausted.
+
+    Termination is convergence-based — no budget limits.
 
     Args:
         search_space: Initial search space (detected options mutable, rest fixed).
         fitness_fn: Fitness evaluation function.
         initial_config: Starting configuration.
-        total_budget: Total evaluation budget across all iterations.
         impact_fn: Function to measure impact of remaining options.
             Should accept (repo_path, candidate_names, base_options, lookups,
-            current_config, budget, ...) and return a list of ImpactScore.
+            current_config, ...) and return a list of ImpactScore.
         impact_kwargs: Keyword arguments to pass to impact_fn (repo_path,
             base_options, lookups, etc.).
         num_islands: GA island count.
@@ -291,13 +254,6 @@ def run_iterative_optimization(
         max_batch_fraction: Max fraction of remaining to unlock per batch.
         impact_threshold: Min fraction of top impact score to include.
         min_improvement_ratio: Min ratio of fitness improvement to continue.
-        max_impact_budget: Max budget for a single impact measurement.
-        impact_budget_fraction: Divisor for impact budget allocation.
-        min_next_iteration_budget: Budget to reserve for next iteration.
-        min_loop_budget: Minimum budget to continue the loop.
-        min_opt_sub_budget: Minimum budget per optimizer sub-run.
-        min_penalty_polish_budget: Minimum budget required to attempt a final
-            penalty polish pass.
         convergence_threshold: Stop optimizer sub-runs early when no improvement
             occurs for this many consecutive generations/evaluations.
         debug: Enable verbose output.
@@ -308,66 +264,41 @@ def run_iterative_optimization(
     current_config = copy.deepcopy(initial_config)
     current_space = search_space
     best_fitness = fitness_fn(copy.deepcopy(current_config))
-    remaining_budget = total_budget
 
     iteration = 0
     if debug:
-        print("\n=== Iterative Expansion Optimization ===", file=sys.stderr)
+        dbg("iterative", "=== Iterative Expansion Optimization ===", summary=True)
 
-    while remaining_budget >= min_loop_budget:
+    while True:
         iteration += 1
         remaining_fixed = current_space.remaining_fixed()
         total_mutable = len(current_space.mutable_parameters)
 
         if debug:
-            print(
-                f"\n--- [optimize] Iteration {iteration} ---",
-                file=sys.stderr,
-            )
-            print(
-                f"  Mutable: {total_mutable}, Fixed: {len(remaining_fixed)}, Budget remaining: {remaining_budget}",
-                file=sys.stderr,
-            )
-
-        # Allocate budget: reserve for impact measurement and next iteration.
-        # Scale impact budget with the number of candidates (at least 2 evals each).
-        num_candidates = len(remaining_fixed)
-        impact_budget = min(
-            max_impact_budget,
-            max(num_candidates * 2, remaining_budget // impact_budget_fraction),
-        )
-        # Cap opt budget to leave room for impact + next iteration.
-        opt_reserved = impact_budget + min_next_iteration_budget
-        opt_budget = max(min_loop_budget, remaining_budget - opt_reserved)
-        # Ensure opt budget doesn't consume more than 60% of remaining.
-        opt_budget = min(opt_budget, int(remaining_budget * 0.6))
+            dbg("optimize", f"--- Iteration {iteration} ---", summary=True)
+            dbg("optimize", f"Mutable: {total_mutable}, Fixed: {len(remaining_fixed)}")
 
         # Optimize current mutable parameters.
         result = _optimize_batch(
             search_space=current_space,
             fitness_fn=fitness_fn,
             current_config=current_config,
-            budget=opt_budget,
             num_islands=num_islands,
             population_size=population_size,
             num_workers=num_workers,
-            min_sub_budget=min_opt_sub_budget,
             convergence_threshold=convergence_threshold,
             debug=debug,
-            debug_prefix="[optimize] ",
+            tag="optimize",
         )
 
         if result.best_fitness < best_fitness:
             current_config = copy.deepcopy(result.best_config)
             best_fitness = result.best_fitness
 
-        # Deduct actual evaluations used, not the allocated budget.
-        remaining_budget -= result.evaluations_used
-
         # If no remaining fixed options, we're done.
         if not remaining_fixed:
             if debug:
-                print("  [optimize] No remaining fixed options. Done.", file=sys.stderr)
+                dbg("optimize", "No remaining fixed options. Done.")
             break
 
         # Measure impact of remaining options, excluding penalty parameters.
@@ -377,40 +308,33 @@ def run_iterative_optimization(
             p.name for p in remaining_fixed if not _is_penalty_option(p.name)
         ]
         if debug:
-            msg = (
-                f"  [impact] Measuring impact of {len(candidate_names)} remaining options "
-                f"({len(penalty_names)} penalties excluded)..."
+            dbg(
+                "impact",
+                f"Measuring impact of {len(candidate_names)} remaining options ({len(penalty_names)} penalties excluded)...",
             )
-            print(msg, file=sys.stderr)
 
         scores = impact_fn(
             candidate_names=candidate_names,
             current_config=current_config,
-            budget=impact_budget,
             **impact_kwargs,
         )
 
-        remaining_budget -= impact_budget
-
         if not scores:
             if debug:
-                print("  [impact] No impactful options found. Done.", file=sys.stderr)
+                dbg("impact", "No impactful options found. Done.")
             break
 
         if debug:
             top = min(5, len(scores))
             for s in scores[:top]:
-                print(
-                    f"  [impact]   {s.name}: delta={s.fitness_delta:.1f}",
-                    file=sys.stderr,
-                )
+                dbg("impact", f"{s.name}: delta={s.fitness_delta:.1f}")
 
         # Check if improvement is significant enough.
         if scores[0].fitness_delta < best_fitness * min_improvement_ratio:
             if debug:
-                print(
-                    f"  [impact] Top impact ({scores[0].fitness_delta:.1f}) below threshold. Done.",
-                    file=sys.stderr,
+                dbg(
+                    "impact",
+                    f"Top impact ({scores[0].fitness_delta:.1f}) below threshold. Done.",
                 )
             break
 
@@ -423,15 +347,11 @@ def run_iterative_optimization(
         )
         if not batch:
             if debug:
-                print(
-                    "  [impact] No options selected for batch. Done.", file=sys.stderr
-                )
+                dbg("impact", "No options selected for batch. Done.")
             break
 
         if debug:
-            print(
-                f"  [expand] Unlocking {len(batch)} options: {batch}", file=sys.stderr
-            )
+            dbg("expand", f"Unlocking {len(batch)} options: {batch}")
 
         # Unlock the batch.
         current_space = current_space.unlock(batch)
@@ -440,50 +360,39 @@ def run_iterative_optimization(
     # Penalties are relative weights, so they only make sense as a group.
     remaining_fixed = current_space.remaining_fixed()
     penalty_options = [p.name for p in remaining_fixed if _is_penalty_option(p.name)]
-    if penalty_options and remaining_budget >= min_penalty_polish_budget:
+    if penalty_options:
         if debug:
-            msg = (
-                f"\n--- [penalty-polish] ({len(penalty_options)} penalties, "
-                f"budget={remaining_budget}) ---"
-            )
-            print(msg, file=sys.stderr)
+            dbg("penalty-polish", f"({len(penalty_options)} penalties)", summary=True)
         current_space = current_space.unlock(penalty_options)
         result = _optimize_batch(
             search_space=current_space,
             fitness_fn=fitness_fn,
             current_config=current_config,
-            budget=remaining_budget,
             num_islands=num_islands,
             population_size=population_size,
             num_workers=num_workers,
-            min_sub_budget=min_opt_sub_budget,
             convergence_threshold=convergence_threshold,
             debug=debug,
-            debug_prefix="[penalty-polish] ",
+            tag="penalty-polish",
         )
         if result.best_fitness < best_fitness:
             current_config = copy.deepcopy(result.best_config)
             best_fitness = result.best_fitness
 
-    # Final global polish with remaining budget.
-    if remaining_budget >= min_loop_budget and current_space.mutable_parameters:
+    # Final global polish with all mutable parameters.
+    if current_space.mutable_parameters:
         if debug:
-            print(
-                f"\n--- [global-polish] (budget={remaining_budget}) ---",
-                file=sys.stderr,
-            )
+            dbg("global-polish", "---", summary=True)
         result = _optimize_batch(
             search_space=current_space,
             fitness_fn=fitness_fn,
             current_config=current_config,
-            budget=remaining_budget,
             num_islands=num_islands,
             population_size=population_size,
             num_workers=num_workers,
-            min_sub_budget=min_opt_sub_budget,
             convergence_threshold=convergence_threshold,
             debug=debug,
-            debug_prefix="[global-polish] ",
+            tag="global-polish",
         )
         if result.best_fitness < best_fitness:
             current_config = copy.deepcopy(result.best_config)

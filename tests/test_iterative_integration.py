@@ -72,7 +72,6 @@ class TestFullIterativeLoop:
                     "ColumnLimit": 80,
                     "TabWidth": 8,
                 },
-                total_budget=500,
                 impact_fn=impact_fn,
                 impact_kwargs={},
                 num_islands=1,
@@ -107,7 +106,6 @@ class TestFullIterativeLoop:
             search_space=space,
             fitness_fn=fitness,
             initial_config={"IndentWidth": 4, "ColumnLimit": 80},
-            total_budget=500,
             impact_fn=impact_fn,
             impact_kwargs={},
             num_islands=1,
@@ -134,7 +132,6 @@ class TestStoppingConditions:
             search_space=space,
             fitness_fn=fitness,
             initial_config={"A": 4},
-            total_budget=500,
             impact_fn=impact_fn,
             impact_kwargs={},
             num_islands=1,
@@ -157,7 +154,6 @@ class TestStoppingConditions:
             search_space=space,
             fitness_fn=fitness,
             initial_config={"A": 4},
-            total_budget=500,
             impact_fn=impact_fn,
             impact_kwargs={},
             min_improvement_ratio=MIN_IMPROVEMENT_RATIO,
@@ -170,34 +166,14 @@ class TestStoppingConditions:
         assert result.best_fitness == 500.0
         assert impact_fn.call_count == 1
 
-    def test_stops_when_budget_exhausted(self):
-        """Stop when remaining budget is below min_loop_budget."""
-        space = _make_space(detected=["A"], fixed=["X"])
-        fitness = MagicMock(return_value=500.0)
-        impact_fn = MagicMock(return_value=[ImpactScore("X", 100.0)])
-
-        result = run_iterative_optimization(
-            search_space=space,
-            fitness_fn=fitness,
-            initial_config={"A": 4},
-            total_budget=5,  # Below MIN_LOOP_BUDGET (10)
-            impact_fn=impact_fn,
-            impact_kwargs={},
-            num_islands=1,
-            population_size=2,
-            num_workers=1,
-            debug=False,
-        )
-
-        assert result.best_fitness == 500.0
-        impact_fn.assert_not_called()
-
 
 class TestBatchSelection:
     """Test batch selection with real _select_batch logic."""
 
     def test_batch_capped_at_percentage(self):
         """Batch size is capped at MAX_BATCH_FRACTION of remaining."""
+        from unittest.mock import patch
+
         space = _make_space(
             detected=["A"],
             fixed=[f"opt_{i}" for i in range(50)],
@@ -206,22 +182,30 @@ class TestBatchSelection:
 
         # All 50 options are equally impactful.
         scores = [ImpactScore(f"opt_{i}", 100.0) for i in range(50)]
-        impact_fn = MagicMock(return_value=scores)
+        # First call returns 50 impactful options; second call returns none (loop stops).
+        impact_fn = MagicMock()
+        impact_fn.side_effect = [scores, []]
 
-        result = run_iterative_optimization(
-            search_space=space,
-            fitness_fn=fitness,
-            initial_config={"A": 4},
-            total_budget=500,
-            impact_fn=impact_fn,
-            impact_kwargs={},
-            max_batch_fraction=MAX_BATCH_FRACTION,
-            impact_threshold=IMPACT_THRESHOLD,
-            num_islands=1,
-            population_size=2,
-            num_workers=1,
-            debug=False,
-        )
+        with patch("src.optimization_engine.iterative._optimize_batch") as mock_opt:
+            mock_opt.return_value = MagicMock(
+                best_fitness=500.0,
+                best_config={"A": 4},
+                evaluations_used=5,
+            )
+
+            result = run_iterative_optimization(
+                search_space=space,
+                fitness_fn=fitness,
+                initial_config={"A": 4},
+                impact_fn=impact_fn,
+                impact_kwargs={},
+                max_batch_fraction=MAX_BATCH_FRACTION,
+                impact_threshold=IMPACT_THRESHOLD,
+                num_islands=1,
+                population_size=2,
+                num_workers=1,
+                debug=False,
+            )
 
         # After first unlock, remaining should be 50 - 10 = 40.
         assert impact_fn.call_count >= 1
@@ -258,7 +242,6 @@ class TestBatchSelection:
                 search_space=space,
                 fitness_fn=fitness,
                 initial_config={"A": 4},
-                total_budget=500,
                 impact_fn=impact_fn,
                 impact_kwargs={},
                 max_batch_fraction=MAX_BATCH_FRACTION,
@@ -305,7 +288,6 @@ class TestBatchSelection:
                 search_space=space,
                 fitness_fn=fitness,
                 initial_config={"A": 4},
-                total_budget=500,
                 impact_fn=impact_fn,
                 impact_kwargs={},
                 max_batch_fraction=MAX_BATCH_FRACTION,
@@ -317,7 +299,7 @@ class TestBatchSelection:
             )
 
             assert result.best_fitness == 500.0
-            # Budget allows 3 iterations: X unlocked, then Y, then empty stops.
+            # Loop runs 3 iterations: X unlocked, then Y, then empty stops.
             assert impact_fn.call_count == 3
             # Verify X was unlocked (not in second call's candidates).
             second_candidates = impact_fn.call_args_list[1].kwargs["candidate_names"]

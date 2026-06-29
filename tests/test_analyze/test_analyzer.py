@@ -27,6 +27,7 @@ class TestAnalyze:
         assert "IndentWidth" in result
         assert "ColumnLimit" in result
         assert "QualifierAlignment" in result
+        assert "QualifierOrder" in result
         assert "MaxEmptyLinesToKeep" in result
         assert result["NumericLiteralCase.HexDigit"] == "Upper"
         assert result["NumericLiteralCase.ExponentLetter"] == "Lower"
@@ -92,6 +93,13 @@ class TestAnalyze:
         assert result["BreakBeforeBraces"] == "Custom"
         assert result["BraceWrapping.AfterControlStatement"] == "Never"
         assert result["BraceWrapping.AfterFunction"] is False
+
+    def test_qualifier_alignment_forced_custom(self, tmp_path: Path):
+        # QualifierAlignment must always be Custom so QualifierOrder is valid.
+        _ = _write_file(tmp_path, "a.cpp", "int x = 1;\n")
+        result = analyze(str(tmp_path))
+        assert result["QualifierAlignment"] == "Custom"
+        assert result["QualifierOrder"] == ["inline", "static", "type", "const"]
 
     def test_analyze_includes_reflow_comments(self, tmp_path: Path):
         # Comments within column limit -> ReflowComments: Never
@@ -239,6 +247,9 @@ class TestAnalyzeWithMetadata:
         assert result["BreakBeforeBraces"].confidence == "forced"
         assert result["SpaceBeforeParens"].confidence == "forced"
         assert result["SpacesInParens"].confidence == "forced"
+        assert result["QualifierAlignment"].confidence == "forced"
+        assert result["QualifierOrder"].confidence == "forced"
+        assert result["QualifierOrder"].value == ["inline", "static", "type", "const"]
 
     def test_structure_tier_for_brace_wrapping(self, tmp_path: Path):
         _ = _write_file(

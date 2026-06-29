@@ -158,7 +158,6 @@ class TestRunPhase:
             search_space=space,
             fitness_fn=fitness,
             initial_config={"a": 1},
-            budget=10,
             num_islands=1,
             population_size=4,
             num_workers=1,
@@ -184,7 +183,6 @@ class TestRunPhase:
             search_space=space,
             fitness_fn=fitness,
             initial_config={"a": 1},
-            budget=10,
             num_islands=1,
             population_size=4,
             num_workers=1,
@@ -212,7 +210,6 @@ class TestRunPhase:
             search_space=space,
             fitness_fn=fitness,
             initial_config={"IndentWidth": 2},
-            budget=20,
             num_islands=1,
             population_size=4,
             num_workers=1,
@@ -220,34 +217,6 @@ class TestRunPhase:
         )
         assert result.best_fitness == 0.0
         assert result.best_config["IndentWidth"] == 4
-
-    def test_ga_minimum_budget_adjustment(self):
-        """When budget is small, GA budget should be bumped to minimum 5."""
-        space = SearchSpace(
-            parameters={
-                "IndentWidth": ParameterDef(
-                    name="IndentWidth",
-                    param_type="int",
-                    possible_values=[2, 4],
-                    tier="structure",
-                ),
-            }
-        )
-        fitness = _make_fitness({"IndentWidth": 4})
-        # Budget of 4 is less than minimum 5, but should not crash
-        result = _run_phase(
-            phase_name="structure",
-            tier="structure",
-            search_space=space,
-            fitness_fn=fitness,
-            initial_config={"IndentWidth": 2},
-            budget=4,
-            num_islands=1,
-            population_size=4,
-            num_workers=1,
-            debug=False,
-        )
-        assert isinstance(result, OptimizationResult)
 
     @patch("src.optimization_engine.nevergrad.ng.optimizers.registry")
     @patch("src.optimization_engine.nevergrad.concurrent.futures.ThreadPoolExecutor")
@@ -282,7 +251,6 @@ class TestRunPhase:
             search_space=space,
             fitness_fn=fitness,
             initial_config={"BreakBeforeBraces": "Attach"},
-            budget=20,
             num_islands=1,
             population_size=4,
             num_workers=1,
@@ -337,7 +305,6 @@ class TestRunPhase:
             search_space=space,
             fitness_fn=fitness,
             initial_config={"BreakBeforeBraces": "Attach"},
-            budget=20,
             num_islands=1,
             population_size=4,
             num_workers=1,
@@ -386,7 +353,6 @@ class TestRunPhase:
             search_space=space,
             fitness_fn=fitness,
             initial_config={"IndentWidth": 2, "BreakBeforeBraces": "Attach"},
-            budget=40,
             num_islands=1,
             population_size=4,
             num_workers=1,
@@ -417,7 +383,6 @@ class TestRunPhasedOptimization:
             search_space=space,
             fitness_fn=fitness,
             initial_config={"a": 1},
-            total_budget=20,
             num_islands=1,
             population_size=4,
             num_workers=1,
@@ -451,7 +416,6 @@ class TestRunPhasedOptimization:
             search_space=space,
             fitness_fn=fitness,
             initial_config={"a": 1, "b": "x"},
-            total_budget=40,
             num_islands=1,
             population_size=4,
             num_workers=1,
@@ -482,7 +446,6 @@ class TestRunPhasedOptimization:
             search_space=space,
             fitness_fn=fitness,
             initial_config={"a": 1, "b": "x"},
-            total_budget=40,
             num_islands=1,
             population_size=4,
             num_workers=1,
@@ -547,7 +510,6 @@ class TestRunPhasedOptimization:
                 "BreakBeforeBraces": "Attach",
                 "SortIncludes": False,
             },
-            total_budget=60,
             num_islands=1,
             population_size=4,
             num_workers=1,
@@ -556,43 +518,6 @@ class TestRunPhasedOptimization:
         # GA should find IndentWidth=4; nevergrad mock may not find categoricals
         assert isinstance(result, OptimizationResult)
         assert result.best_config["IndentWidth"] == 4
-
-    def test_budget_allocation_proportional(self):
-        """Budget should be split proportionally across tiers."""
-        space = SearchSpace(
-            parameters={
-                "a": ParameterDef(
-                    name="a",
-                    param_type="int",
-                    possible_values=[1, 2],
-                    tier="resolve",
-                ),
-                "b": ParameterDef(
-                    name="b",
-                    param_type="int",
-                    possible_values=[3, 4],
-                    tier="resolve",
-                ),
-                "c": ParameterDef(
-                    name="c",
-                    param_type="str",
-                    possible_values=["x"],
-                    tier="structure",
-                ),
-            }
-        )
-        fitness = _make_fitness({"a": 2, "b": 4, "c": "x"})
-        result = run_phased_optimization(
-            search_space=space,
-            fitness_fn=fitness,
-            initial_config={"a": 1, "b": 3, "c": "x"},
-            total_budget=30,
-            num_islands=1,
-            population_size=4,
-            num_workers=1,
-            debug=False,
-        )
-        assert result.best_fitness == 0.0
 
     def test_all_fixed_params_returns_initial(self):
         space = SearchSpace(
@@ -605,7 +530,6 @@ class TestRunPhasedOptimization:
             search_space=space,
             fitness_fn=fitness,
             initial_config={"a": 1},
-            total_budget=10,
             num_islands=1,
             population_size=4,
             num_workers=1,
@@ -613,78 +537,6 @@ class TestRunPhasedOptimization:
         )
         assert result.best_config == {"a": 1}
         assert result.best_fitness == 0.0
-
-    def test_budget_minimum_per_tier(self):
-        """Each active tier should get at least 5 evaluations."""
-        space = SearchSpace(
-            parameters={
-                "a": ParameterDef(
-                    name="a",
-                    param_type="int",
-                    possible_values=[1, 2],
-                    tier="resolve",
-                ),
-                "b": ParameterDef(
-                    name="b",
-                    param_type="int",
-                    possible_values=[3, 4],
-                    tier="structure",
-                ),
-                "c": ParameterDef(
-                    name="c",
-                    param_type="int",
-                    possible_values=[5, 6],
-                    tier="polish",
-                ),
-            }
-        )
-        fitness = _make_fitness({"a": 2, "b": 4, "c": 6})
-        # Budget of 15 = 5 per tier minimum
-        result = run_phased_optimization(
-            search_space=space,
-            fitness_fn=fitness,
-            initial_config={"a": 1, "b": 3, "c": 5},
-            total_budget=15,
-            num_islands=1,
-            population_size=4,
-            num_workers=1,
-            debug=False,
-        )
-        # With minimum budget per tier, we may not find optimal, but it should not crash
-        assert result.best_fitness <= 3.0
-
-    def test_phase_budget_below_minimum_is_skipped(self):
-        """If budget allocation results in < 5 for a tier, it should be skipped."""
-        space = SearchSpace(
-            parameters={
-                "a": ParameterDef(
-                    name="a",
-                    param_type="int",
-                    possible_values=[1, 2],
-                    tier="resolve",
-                ),
-                "b": ParameterDef(
-                    name="b",
-                    param_type="int",
-                    possible_values=[3, 4],
-                    tier="structure",
-                ),
-            }
-        )
-        fitness = _make_fitness({"a": 2, "b": 4})
-        # Budget of 4 is below minimum 5, so resolve should run but structure may be skipped
-        result = run_phased_optimization(
-            search_space=space,
-            fitness_fn=fitness,
-            initial_config={"a": 1, "b": 3},
-            total_budget=4,
-            num_islands=1,
-            population_size=4,
-            num_workers=1,
-            debug=False,
-        )
-        # Should not crash
-        assert isinstance(result, OptimizationResult)
 
     def test_debug_output(self, capsys):
         """Debug mode should print phase information."""
@@ -703,7 +555,6 @@ class TestRunPhasedOptimization:
             search_space=space,
             fitness_fn=fitness,
             initial_config={"a": 1},
-            total_budget=20,
             num_islands=1,
             population_size=4,
             num_workers=1,
@@ -747,7 +598,6 @@ class TestRunPhasedOptimization:
             search_space=space,
             fitness_fn=fitness,
             initial_config={"a": 1, "b": "x"},
-            total_budget=30,
             num_islands=1,
             population_size=4,
             num_workers=1,

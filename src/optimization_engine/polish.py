@@ -7,9 +7,9 @@ Repeats passes until no improvements are found or max_passes is reached.
 from __future__ import annotations
 
 import copy
-import sys
 from typing import Any, Callable
 
+from ..utils import dbg
 from .types import Individual, SearchSpace
 
 FitnessFn = Callable[[dict[str, Any]], float]
@@ -42,16 +42,16 @@ def polish_coordinate_descent(
     mutable = search_space.mutable_parameters
     if not mutable:
         if debug:
-            print("  No mutable options for polish. Skipping.", file=sys.stderr)
+            dbg("polish", "No mutable options for polish. Skipping.")
         return Individual(config=config, fitness=initial_fitness)
 
     current_fitness = initial_fitness
     if debug:
-        print(
-            f"  Starting coordinate descent polish. {len(mutable)} mutable options.",
-            file=sys.stderr,
+        dbg(
+            "polish",
+            f"Starting coordinate descent polish. {len(mutable)} mutable options.",
         )
-        print(f"  Initial fitness: {current_fitness}", file=sys.stderr)
+        dbg("polish", f"Initial fitness: {current_fitness}")
 
     for pass_num in range(1, max_passes + 1):
         improvements = 0
@@ -80,23 +80,19 @@ def polish_coordinate_descent(
                 improvements += 1
 
         if debug:
-            print(
-                f"  Polish pass {pass_num}: {improvements} improvements, fitness: {current_fitness}",
-                file=sys.stderr,
+            dbg(
+                "polish",
+                f"Pass {pass_num}: {improvements} improvements, fitness: {current_fitness}",
             )
 
         if improvements == 0:
             if debug:
-                print(
-                    f"  Coordinate descent converged after {pass_num} pass(es).",
-                    file=sys.stderr,
+                dbg(
+                    "polish", f"Coordinate descent converged after {pass_num} pass(es)."
                 )
             break
     else:
         if debug:
-            print(
-                f"  Coordinate descent reached max passes ({max_passes}).",
-                file=sys.stderr,
-            )
+            dbg("polish", f"Coordinate descent reached max passes ({max_passes}).")
 
     return Individual(config=config, fitness=current_fitness)

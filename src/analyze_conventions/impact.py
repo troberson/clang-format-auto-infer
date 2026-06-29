@@ -19,9 +19,28 @@ from ..clang_format_parser import generate_clang_format_config
 from ..data_classes import GeneticAlgorithmLookups
 from ..optimization_engine.types import ParameterDef, SearchSpace
 from ..optimization_engine.nevergrad import run_nevergrad_optimization
+from ..optimization_engine.phased import NG_SAFETY_BUDGET
 
 # Curated penalty values shared with clang_format_adapter.
 CURATED_PENALTY_VALUES: list[int] = [2, 10, 50, 150, 1000, 10000]
+
+
+def _preserve_analyzer_tiers(
+    analysis_results: dict[str, Any],
+) -> dict[str, str]:
+    """Return tier assignments from the analyzer when impact cannot be measured.
+
+    Used as a fallback when no options have possible_values, so the impact
+    scan cannot run. Preserves the analyzer's resolve/structure/polish tiers
+    instead of overriding everything to 'polish'.
+    """
+    tiers: dict[str, str] = {}
+    for name, raw in analysis_results.items():
+        if hasattr(raw, "tier"):
+            tiers[name] = raw.tier
+        else:
+            tiers[name] = "polish"
+    return tiers
 
 
 class ImpactScore:
@@ -44,7 +63,6 @@ def measure_remaining_impact(
     base_options: dict[str, Any],
     lookups: GeneticAlgorithmLookups,
     current_config: dict[str, Any],
-    budget: int = 100,
     process_id: int = 0,
     debug: bool = False,
     file_sample_percentage: float = 100.0,
@@ -62,7 +80,6 @@ def measure_remaining_impact(
         base_options: Flat options dict from clang-format --dump-config.
         lookups: Contains json_options_lookup and forced_options_lookup.
         current_config: Current best config values (starting point).
-        budget: Number of clang-format evaluations (default 100).
         process_id: Worker process ID.
         debug: Enable debug output.
         file_sample_percentage: Percentage of files to sample.
@@ -159,7 +176,7 @@ def measure_remaining_impact(
     result = run_nevergrad_optimization(
         search_space=search_space,
         objective=fitness,
-        budget=budget,
+        budget=NG_SAFETY_BUDGET,
         num_workers=1,
         optimizer_name="TwoPointsDE",
         debug=debug,
@@ -191,7 +208,6 @@ def measure_impact(
     analysis_results: dict[str, Any],
     base_options: dict[str, Any],
     lookups: GeneticAlgorithmLookups,
-    budget: int = 30,
     process_id: int = 0,
     debug: bool = False,
     file_sample_percentage: float = 100.0,
@@ -209,7 +225,6 @@ def measure_impact(
         analysis_results: Dict from analyze() or analyze_with_metadata().
         base_options: Flat options dict from clang-format --dump-config.
         lookups: Contains json_options_lookup and forced_options_lookup.
-        budget: Number of clang-format evaluations (default 30).
         process_id: Worker process ID.
         debug: Enable debug output.
         file_sample_percentage: Percentage of files to sample.
@@ -225,16 +240,13 @@ def measure_impact(
         if full_path not in base_options:
             continue
 
-        if hasattr(raw_value, "value"):
-            value = raw_value.value
-        else:
-            value = raw_value
-
-        possible_values = list(
-            lookups.json_options_lookup.get(full_path, {}).get(
-                "possible_values", [value]
-            )
+        possible_values = lookups.json_options_lookup.get(full_path, {}).get(
+            "possible_values"
         )
+        if not possible_values:
+            continue
+
+        possible_values = list(possible_values)
 
         # Skip if only one possible value — nothing to optimize.
         if len(possible_values) <= 1:
@@ -248,7 +260,9 @@ def measure_impact(
         )
 
     if not parameters:
-        return {name: "polish" for name in analysis_results}
+        # No options have possible_values — cannot measure impact.
+        # Preserve the analyzer's original tier assignments.
+        return _preserve_analyzer_tiers(analysis_results)
 
     search_space = SearchSpace(parameters=parameters)
 
@@ -308,7 +322,7 @@ def measure_impact(
     result = run_nevergrad_optimization(
         search_space=search_space,
         objective=fitness,
-        budget=budget,
+        budget=NG_SAFETY_BUDGET,
         num_workers=1,
         optimizer_name="TwoPointsDE",
         debug=debug,

@@ -111,7 +111,7 @@ class TestMeasureImpact:
             }
         )
 
-        tiers = measure_impact("/tmp/repo", analysis, base, lookups, budget=10)
+        tiers = measure_impact("/tmp/repo", analysis, base, lookups)
         # IndentWidth changed 4->8, so structure; ColumnLimit unchanged, so polish.
         assert tiers["IndentWidth"] == "structure"
         assert tiers["ColumnLimit"] == "polish"
@@ -131,7 +131,7 @@ class TestMeasureImpact:
             json_options={"IndentWidth": {"possible_values": [2, 4, 8]}}
         )
 
-        tiers = measure_impact("/tmp/repo", analysis, base, lookups, budget=10)
+        tiers = measure_impact("/tmp/repo", analysis, base, lookups)
         assert tiers["IndentWidth"] == "resolve"
 
     @patch("src.analyze_conventions.impact.run_nevergrad_optimization")
@@ -143,9 +143,54 @@ class TestMeasureImpact:
         # No possible_values in lookups, so only 1 value -> not mutable.
         lookups = _make_lookups(json_options={})
 
-        tiers = measure_impact("/tmp/repo", analysis, base, lookups, budget=10)
+        tiers = measure_impact("/tmp/repo", analysis, base, lookups)
         assert tiers["IndentWidth"] == "polish"
         # nevergrad should not be called.
+        mock_ng.assert_not_called()
+
+    @patch("src.analyze_conventions.impact.run_nevergrad_optimization")
+    def test_no_mutable_options_preserves_analyzer_tiers(self, mock_ng):
+        """When no options have possible_values, preserve analyzer tiers."""
+        base = _make_base_options()
+        analysis = {
+            "IndentWidth": DetectedOption(4, "guessed", "resolve"),
+            "ColumnLimit": DetectedOption(72, "detected", "structure"),
+            "ReflowComments": DetectedOption("Never", "detected", "polish"),
+        }
+        lookups = _make_lookups(json_options={})
+
+        tiers = measure_impact("/tmp/repo", analysis, base, lookups)
+        assert tiers["IndentWidth"] == "resolve"
+        assert tiers["ColumnLimit"] == "structure"
+        assert tiers["ReflowComments"] == "polish"
+        mock_ng.assert_not_called()
+
+    @patch("src.analyze_conventions.impact.run_nevergrad_optimization")
+    def test_no_mutable_options_raw_value_defaults_polish(self, mock_ng):
+        """Raw values without tier attribute default to polish."""
+        base = _make_base_options()
+        analysis = {
+            "IndentWidth": 4,  # raw value, no DetectedOption
+        }
+        lookups = _make_lookups(json_options={})
+
+        tiers = measure_impact("/tmp/repo", analysis, base, lookups)
+        assert tiers["IndentWidth"] == "polish"
+        mock_ng.assert_not_called()
+
+    @patch("src.analyze_conventions.impact.run_nevergrad_optimization")
+    def test_single_possible_value_skipped(self, mock_ng):
+        """Options with only 1 possible_values in JSON are skipped."""
+        base = _make_base_options()
+        analysis = {
+            "IndentWidth": DetectedOption(4, "detected"),
+        }
+        # Only 1 possible value, so it gets skipped.
+        lookups = _make_lookups(json_options={"IndentWidth": {"possible_values": [4]}})
+
+        tiers = measure_impact("/tmp/repo", analysis, base, lookups)
+        # Falls through to preserve_analyzer_tiers because parameters is empty.
+        assert tiers["IndentWidth"] == "polish"
         mock_ng.assert_not_called()
 
     @patch("src.analyze_conventions.impact.run_nevergrad_optimization")
@@ -161,11 +206,11 @@ class TestMeasureImpact:
             json_options={"IndentWidth": {"possible_values": [2, 4, 8]}}
         )
 
-        tiers = measure_impact("/tmp/repo", analysis, base, lookups, budget=10)
+        tiers = measure_impact("/tmp/repo", analysis, base, lookups)
         assert tiers["IndentWidth"] == "polish"
 
     @patch("src.analyze_conventions.impact.run_nevergrad_optimization")
-    def test_passes_budget_to_nevergrad(self, mock_ng):
+    def test_uses_safety_budget(self, mock_ng):
         mock_ng.return_value = OptimizationResult(
             best_config={"IndentWidth": 8},
             best_fitness=10.0,
@@ -177,9 +222,9 @@ class TestMeasureImpact:
             json_options={"IndentWidth": {"possible_values": [2, 4, 8]}}
         )
 
-        _ = measure_impact("/tmp/repo", analysis, base, lookups, budget=50)
+        _ = measure_impact("/tmp/repo", analysis, base, lookups)
         call_kwargs = mock_ng.call_args.kwargs
-        assert call_kwargs["budget"] == 50
+        assert call_kwargs["budget"] == 10_000
 
     @patch("src.analyze_conventions.impact.run_nevergrad_optimization")
     def test_unchanged_options_are_polish(self, mock_ng):
@@ -200,7 +245,7 @@ class TestMeasureImpact:
             }
         )
 
-        tiers = measure_impact("/tmp/repo", analysis, base, lookups, budget=10)
+        tiers = measure_impact("/tmp/repo", analysis, base, lookups)
         assert tiers["IndentWidth"] == "polish"
         assert tiers["ColumnLimit"] == "polish"
 
@@ -223,7 +268,7 @@ class TestMeasureImpact:
             }
         )
 
-        tiers = measure_impact("/tmp/repo", analysis, base, lookups, budget=10)
+        tiers = measure_impact("/tmp/repo", analysis, base, lookups)
         assert tiers["IndentWidth"] == "structure"
         assert tiers["ColumnLimit"] == "structure"
 
@@ -244,7 +289,7 @@ class TestMeasureImpact:
             json_options={"IndentWidth": {"possible_values": [2, 4, 8]}}
         )
 
-        tiers = measure_impact("/tmp/repo", analysis, base, lookups, budget=10)
+        tiers = measure_impact("/tmp/repo", analysis, base, lookups)
         # NonExistentOption is not mutable, so it defaults to polish.
         assert tiers["NonExistentOption"] == "polish"
 
@@ -268,7 +313,7 @@ class TestMeasureImpact:
             }
         )
 
-        tiers = measure_impact("/tmp/repo", analysis, base, lookups, budget=10)
+        tiers = measure_impact("/tmp/repo", analysis, base, lookups)
         assert tiers["IndentWidth"] == "structure"
         # ColumnLimit is in parameters but not in best_config -> polish.
         assert tiers["ColumnLimit"] == "polish"
@@ -331,7 +376,6 @@ class TestMeasureRemainingImpact:
                 base,
                 lookups,
                 current_config,
-                budget=10,
             )
         # Both options changed, so both should have scores.
         assert len(scores) == 2
@@ -362,7 +406,6 @@ class TestMeasureRemainingImpact:
                 base,
                 lookups,
                 current_config,
-                budget=10,
             )
         # Neither option changed, so no scores.
         assert scores == []
@@ -377,7 +420,6 @@ class TestMeasureRemainingImpact:
             base,
             lookups,
             {},
-            budget=10,
         )
         # No possible_values, so empty.
         assert scores == []
@@ -392,7 +434,6 @@ class TestMeasureRemainingImpact:
             base,
             lookups,
             {},
-            budget=10,
         )
         assert scores == []
 
@@ -418,13 +459,12 @@ class TestMeasureRemainingImpact:
                 base,
                 lookups,
                 current_config,
-                budget=10,
             )
         assert len(scores) == 1
         assert scores[0].name == "IndentWidth"
 
     @patch("src.analyze_conventions.impact.run_nevergrad_optimization")
-    def test_passes_budget_to_nevergrad(self, mock_ng):
+    def test_uses_safety_budget(self, mock_ng):
         mock_ng.return_value = OptimizationResult(
             best_config={"IndentWidth": 8},
             best_fitness=400.0,
@@ -442,10 +482,9 @@ class TestMeasureRemainingImpact:
                 base,
                 lookups,
                 {"IndentWidth": 4},
-                budget=200,
             )
         call_kwargs = mock_ng.call_args.kwargs
-        assert call_kwargs["budget"] == 200
+        assert call_kwargs["budget"] == 10_000
 
     @patch("src.analyze_conventions.impact.run_nevergrad_optimization")
     def test_penalty_options_get_curated_values(self, mock_ng):
@@ -468,7 +507,6 @@ class TestMeasureRemainingImpact:
                 base,
                 lookups,
                 {"PenaltyExcessCharacter": 20},
-                budget=10,
             )
         # Should have been unlocked with curated values.
         assert len(scores) == 1
@@ -485,7 +523,6 @@ class TestMeasureRemainingImpact:
             base,
             lookups,
             {"IndentWidth": 4},
-            budget=10,
         )
         # Only one value, so nothing to optimize.
         assert scores == []

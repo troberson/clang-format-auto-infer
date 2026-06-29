@@ -168,15 +168,16 @@ python3 main.py <repo_path> [OPTIONS]
   iterations (default: `0`, disabled).
 - `--checkpoint-resume <file_path>`: **[Genetic Algorithm]** Resume optimization
   from a checkpoint file.
-- `--ng-budget <int>`: **[Nevergrad/Phased/Iterative]** Total number of
-  evaluations (budget) for the optimizer (default: `1000`).
+- `--convergence-threshold <int>`: Stop optimizer sub-runs when no improvement
+  occurs for this many consecutive generations/evaluations (default: `20`).
 - `--ng-optimizer <str>`: **[Nevergrad]** Name of the Nevergrad optimizer to
   use (e.g., `OnePlusOne`, `CMA`, `DE`, `PSO`). See Nevergrad documentation for
   available optimizers.
 - `--max-restarts <int>`: **[Phased]** Maximum restarts per phase on stagnation
   (default: `1`).
-- `--impact-budget <int>`: **[Phased/Iterative]** Evaluation budget for empirical
-  impact measurement (default: `50`).
+- `--convergence-threshold <int>`: **[Phased/Iterative]** Stop optimizer sub-runs
+  when no improvement occurs for this many consecutive evaluations (default:
+  `20`). Impact measurement uses a fixed internal budget.
 - `-j`, `--jobs <int>`: Number of parallel jobs to run for fitness calculation
   (default: `1`). Each job will operate on a separate temporary copy of your
   repository. Increase this to utilize more CPU cores. For the `nevergrad`
@@ -269,15 +270,14 @@ python3 main.py /home/user/my_project \
 ### Example Usage (Nevergrad)
 
 To optimize the `clang-format` configuration for a repository located at
-`/home/user/my_project` using the `Nevergrad` optimizer `CMA`, with a budget of
-2000 evaluations, and 8 parallel jobs:
+`/home/user/my_project` using the `Nevergrad` optimizer `CMA`, and 8 parallel
+jobs:
 
 ```sh
 python3 main.py /home/user/my_project \
     --optimizer nevergrad \
     --option-values-json data/clang-format-values.json \
     --forced-options-yaml data/forced.yml \
-    --ng-budget 2000 \
     --ng-optimizer CMA \
     --output optimized.clang-format \
     --jobs 8 \
@@ -294,8 +294,6 @@ python3 main.py /home/user/my_project \
     --optimizer phased \
     --option-values-json data/clang-format-values.json \
     --forced-options-yaml data/forced.yml \
-    --ng-budget 500 \
-    --impact-budget 100 \
     --output optimized.clang-format \
     --jobs 4
 ```
@@ -310,8 +308,6 @@ python3 main.py /home/user/my_project \
     --optimizer iterative \
     --option-values-json data/clang-format-values.json \
     --forced-options-yaml data/forced.yml \
-    --ng-budget 500 \
-    --impact-budget 100 \
     --output optimized.clang-format \
     --jobs 4
 ```

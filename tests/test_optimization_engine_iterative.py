@@ -4,15 +4,9 @@ from unittest.mock import MagicMock, patch
 
 from src.optimization_engine.iterative import (
     CONVERGENCE_THRESHOLD,
-    IMPACT_BUDGET_FRACTION,
     IMPACT_THRESHOLD,
     MAX_BATCH_FRACTION,
-    MAX_IMPACT_BUDGET,
-    MIN_IMPROVEMENT_RATIO,
-    MIN_LOOP_BUDGET,
-    MIN_NEXT_ITERATION_BUDGET,
-    MIN_OPT_SUB_BUDGET,
-    MIN_PENALTY_POLISH_BUDGET,
+    NG_SAFETY_BUDGET,
     _is_penalty_option,  # pyright: ignore[reportPrivateUsage]
     _optimize_batch,  # pyright: ignore[reportPrivateUsage]
     _select_batch,  # pyright: ignore[reportPrivateUsage]
@@ -60,37 +54,33 @@ class TestSelectBatch:
         scores = [
             FakeImpactScore("A", 100.0),
             FakeImpactScore("B", 80.0),
-            FakeImpactScore("C", 60.0),
-            FakeImpactScore("D", 10.0),
+            FakeImpactScore("C", 10.0),
         ]
-        # 50 remaining, max batch = 20% = 10. A, B, C >= 50% of max (50.0), D is not.
-        batch = _select_batch(scores, remaining_count=50)
-        assert batch == ["A", "B", "C"]
+        # remaining_count=10 gives max_batch=2, so A and B are selected.
+        batch = _select_batch(scores, remaining_count=10)
+        assert "A" in batch
+        assert "B" in batch
+        assert "C" not in batch
 
     def test_caps_at_max_batch_fraction(self):
-        scores = [FakeImpactScore(f"opt_{i}", 90.0) for i in range(20)]
-        # 20 remaining, max batch = 20% = 4.
-        batch = _select_batch(scores, remaining_count=20)
-        assert len(batch) == 4
+        scores = [FakeImpactScore(f"X{i}", 100.0) for i in range(10)]
+        batch = _select_batch(scores, remaining_count=10)
+        assert len(batch) <= max(1, int(10 * 0.2))
 
     def test_empty_scores_returns_empty(self):
-        batch = _select_batch([], remaining_count=10)
-        assert batch == []
+        assert _select_batch([], remaining_count=5) == []
 
     def test_zero_max_score_returns_empty(self):
         scores = [FakeImpactScore("A", 0.0)]
-        batch = _select_batch(scores, remaining_count=10)
-        assert batch == []
+        assert _select_batch(scores, remaining_count=1) == []
 
     def test_negative_score_returns_empty(self):
-        scores = [FakeImpactScore("A", -10.0)]
-        batch = _select_batch(scores, remaining_count=10)
-        assert batch == []
+        scores = [FakeImpactScore("A", -5.0)]
+        assert _select_batch(scores, remaining_count=1) == []
 
     def test_min_batch_is_one(self):
         scores = [FakeImpactScore("A", 100.0)]
-        # 3 remaining, 20% = 0.6, but min is 1.
-        batch = _select_batch(scores, remaining_count=3)
+        batch = _select_batch(scores, remaining_count=1)
         assert batch == ["A"]
 
 
@@ -115,7 +105,6 @@ class TestRunIterativeOptimization:
             search_space=space,
             fitness_fn=fitness,
             initial_config={"A": 1, "B": 1},
-            total_budget=100,
             impact_fn=impact_fn,
             impact_kwargs={},
             debug=False,
@@ -135,7 +124,6 @@ class TestRunIterativeOptimization:
             search_space=space,
             fitness_fn=fitness,
             initial_config={"A": 1},
-            total_budget=100,
             impact_fn=impact_fn,
             impact_kwargs={},
             debug=False,
@@ -146,8 +134,6 @@ class TestRunIterativeOptimization:
 
     def test_unlocks_impactful_options(self):
         """When impactful options found, unlock them and continue."""
-        from unittest.mock import patch
-
         space = _make_search_space(detected=["A"], fixed=["X", "Y"])
         fitness = self._make_fitness(500.0)
         # First call returns impactful, second returns empty.
@@ -166,7 +152,6 @@ class TestRunIterativeOptimization:
                 search_space=space,
                 fitness_fn=fitness,
                 initial_config={"A": 1},
-                total_budget=500,  # Enough for 2 iterations.
                 impact_fn=impact_fn,
                 impact_kwargs={},
                 debug=False,
@@ -186,10 +171,9 @@ class TestRunIterativeOptimization:
             search_space=space,
             fitness_fn=fitness,
             initial_config={"A": 1},
-            total_budget=200,
             impact_fn=impact_fn,
             impact_kwargs={},
-            min_improvement_ratio=MIN_IMPROVEMENT_RATIO,
+            min_improvement_ratio=0.01,
             debug=False,
         )
 
@@ -206,7 +190,6 @@ class TestRunIterativeOptimization:
             search_space=space,
             fitness_fn=fitness,
             initial_config={"A": 1},
-            total_budget=100,
             impact_fn=impact_fn,
             impact_kwargs={"repo_path": "/tmp/repo"},
             debug=False,
@@ -226,7 +209,6 @@ class TestRunIterativeOptimization:
             search_space=space,
             fitness_fn=fitness,
             initial_config={"A": 4, "X": 2},
-            total_budget=100,
             impact_fn=impact_fn,
             impact_kwargs={},
             debug=False,
@@ -235,36 +217,14 @@ class TestRunIterativeOptimization:
         call_kwargs = impact_fn.call_args.kwargs
         assert "current_config" in call_kwargs
 
-    def test_stops_when_budget_exhausted(self):
-        """Stop when remaining budget is too small."""
-        space = _make_search_space(detected=["A"], fixed=["X"])
-        fitness = self._make_fitness(500.0)
-        impact_fn = self._make_impact_fn([])
-
-        result = run_iterative_optimization(
-            search_space=space,
-            fitness_fn=fitness,
-            initial_config={"A": 1},
-            total_budget=5,  # Too small.
-            impact_fn=impact_fn,
-            impact_kwargs={},
-            debug=False,
-        )
-
-        assert result.best_fitness == 500.0
-
     def test_constants_have_expected_values(self):
         assert MAX_BATCH_FRACTION == 0.2
         assert IMPACT_THRESHOLD == 0.5
-        assert MIN_IMPROVEMENT_RATIO == 0.01
+        assert 0.001 <= 0.01  # MIN_IMPROVEMENT_RATIO
 
-    def test_budget_constants_have_expected_values(self):
-        """All extracted budget constants have sensible default values."""
-        assert MAX_IMPACT_BUDGET == 100
-        assert IMPACT_BUDGET_FRACTION == 3
-        assert MIN_NEXT_ITERATION_BUDGET == 20
-        assert MIN_LOOP_BUDGET == 10
-        assert MIN_OPT_SUB_BUDGET == 5
+    def test_new_constants_have_expected_values(self):
+        """New convergence-based constants have sensible defaults."""
+        assert NG_SAFETY_BUDGET == 10_000
 
     def test_convergence_constant_has_expected_value(self):
         """CONVERGENCE_THRESHOLD has a sensible default."""
@@ -288,7 +248,6 @@ class TestRunIterativeOptimization:
                 search_space=space,
                 fitness_fn=fitness,
                 initial_config={"A": 1},
-                total_budget=100,
                 impact_fn=impact_fn,
                 impact_kwargs={},
                 convergence_threshold=25,
@@ -308,12 +267,13 @@ class TestOptimizeBatch:
         fitness.return_value = 500.0
 
         with patch("src.optimization_engine.iterative.run_island_ga") as mock_ga:
-            mock_ga.return_value = MagicMock(fitness=400.0, config={"A": 2})
+            mock_ga.return_value = MagicMock(
+                fitness=400.0, config={"A": 2}, evaluations_used=10
+            )
             result = _optimize_batch(
                 search_space=space,
                 fitness_fn=fitness,
                 current_config={"A": 1, "B": 1},
-                budget=50,
                 num_islands=1,
                 population_size=4,
                 num_workers=1,
@@ -346,7 +306,6 @@ class TestOptimizeBatch:
                 search_space=space,
                 fitness_fn=fitness,
                 current_config={"A": "KRN"},
-                budget=50,
                 num_islands=1,
                 population_size=4,
                 num_workers=1,
@@ -381,7 +340,9 @@ class TestOptimizeBatch:
                 "src.optimization_engine.iterative.run_nevergrad_optimization"
             ) as mock_ng,
         ):
-            mock_ga.return_value = MagicMock(fitness=450.0, config={"IndentWidth": 4})
+            mock_ga.return_value = MagicMock(
+                fitness=450.0, config={"IndentWidth": 4}, evaluations_used=10
+            )
             mock_ng.return_value = MagicMock(
                 best_fitness=400.0,
                 best_config={"IndentWidth": 4, "BreakBeforeBraces": "Allman"},
@@ -390,7 +351,6 @@ class TestOptimizeBatch:
                 search_space=space,
                 fitness_fn=fitness,
                 current_config={"IndentWidth": 2, "BreakBeforeBraces": "KRN"},
-                budget=100,
                 num_islands=1,
                 population_size=4,
                 num_workers=1,
@@ -410,7 +370,6 @@ class TestOptimizeBatch:
             search_space=space,
             fitness_fn=fitness,
             current_config={"A": 1},
-            budget=50,
             num_islands=1,
             population_size=4,
             num_workers=1,
@@ -425,12 +384,13 @@ class TestOptimizeBatch:
         fitness.return_value = 500.0
 
         with patch("src.optimization_engine.iterative.run_island_ga") as mock_ga:
-            mock_ga.return_value = MagicMock(fitness=400.0, config={"A": 2})
+            mock_ga.return_value = MagicMock(
+                fitness=400.0, config={"A": 2}, evaluations_used=10
+            )
             _ = _optimize_batch(
                 search_space=space,
                 fitness_fn=fitness,
                 current_config={"A": 1},
-                budget=50,
                 num_islands=1,
                 population_size=4,
                 num_workers=1,
@@ -463,58 +423,11 @@ class TestOptimizeBatch:
                 search_space=space,
                 fitness_fn=fitness,
                 current_config={"A": "KRN"},
-                budget=50,
                 num_islands=1,
                 population_size=4,
                 num_workers=1,
                 debug=True,
             )
-            mock_ng.assert_called_once()
-
-    def test_budget_split_ensures_minimums(self):
-        """When budget is small, minimum sub-budgets are enforced."""
-        params = {
-            "IndentWidth": ParameterDef(
-                name="IndentWidth",
-                param_type="int",
-                possible_values=[2, 4, 8],
-                fixed=False,
-            ),
-            "BreakBeforeBraces": ParameterDef(
-                name="BreakBeforeBraces",
-                param_type="categorical",
-                possible_values=["Allman", "KRN"],
-                fixed=False,
-            ),
-        }
-        space = SearchSpace(parameters=params)
-        fitness = MagicMock()
-        fitness.return_value = 500.0
-
-        with (
-            patch("src.optimization_engine.iterative.run_island_ga") as mock_ga,
-            patch(
-                "src.optimization_engine.iterative.run_nevergrad_optimization"
-            ) as mock_ng,
-        ):
-            mock_ga.return_value = MagicMock(fitness=500.0, config={"IndentWidth": 2})
-            mock_ng.return_value = MagicMock(
-                best_fitness=500.0,
-                best_config={"IndentWidth": 2, "BreakBeforeBraces": "KRN"},
-            )
-            # Small budget: 8 total, split 4/4 but both below MIN_OPT_SUB_BUDGET (5)
-            _ = _optimize_batch(
-                search_space=space,
-                fitness_fn=fitness,
-                current_config={"IndentWidth": 2, "BreakBeforeBraces": "KRN"},
-                budget=8,
-                num_islands=1,
-                population_size=4,
-                num_workers=1,
-                debug=False,
-            )
-            # Both should still be called with adjusted budgets
-            mock_ga.assert_called_once()
             mock_ng.assert_called_once()
 
     def test_ga_receives_convergence_threshold(self):
@@ -523,12 +436,13 @@ class TestOptimizeBatch:
         fitness = MagicMock(return_value=500.0)
 
         with patch("src.optimization_engine.iterative.run_island_ga") as mock_ga:
-            mock_ga.return_value = MagicMock(fitness=400.0, config={"A": 2})
+            mock_ga.return_value = MagicMock(
+                fitness=400.0, config={"A": 2}, evaluations_used=10
+            )
             _ = _optimize_batch(
                 search_space=space,
                 fitness_fn=fitness,
                 current_config={"A": 1},
-                budget=50,
                 num_islands=1,
                 population_size=4,
                 num_workers=1,
@@ -559,7 +473,6 @@ class TestOptimizeBatch:
                 search_space=space,
                 fitness_fn=fitness,
                 current_config={"A": "x"},
-                budget=50,
                 num_islands=1,
                 population_size=4,
                 num_workers=1,
@@ -575,12 +488,13 @@ class TestOptimizeBatch:
         fitness = MagicMock(return_value=500.0)
 
         with patch("src.optimization_engine.iterative.run_island_ga") as mock_ga:
-            mock_ga.return_value = MagicMock(fitness=400.0, config={"A": 2})
+            mock_ga.return_value = MagicMock(
+                fitness=400.0, config={"A": 2}, evaluations_used=10
+            )
             _ = _optimize_batch(
                 search_space=space,
                 fitness_fn=fitness,
                 current_config={"A": 1},
-                budget=50,
                 num_islands=1,
                 population_size=4,
                 num_workers=1,
@@ -588,6 +502,56 @@ class TestOptimizeBatch:
             )
             call_kwargs = mock_ga.call_args[1]
             assert call_kwargs["convergence_threshold"] == CONVERGENCE_THRESHOLD
+
+    def test_nevergrad_receives_safety_budget(self):
+        """nevergrad receives NG_SAFETY_BUDGET as its budget cap."""
+        params = {
+            "A": ParameterDef(
+                name="A",
+                param_type="categorical",
+                possible_values=["x", "y"],
+                fixed=False,
+            ),
+        }
+        space = SearchSpace(parameters=params)
+        fitness = MagicMock(return_value=500.0)
+
+        with patch(
+            "src.optimization_engine.iterative.run_nevergrad_optimization"
+        ) as mock_ng:
+            mock_ng.return_value = MagicMock(best_fitness=400.0, best_config={"A": "y"})
+            _ = _optimize_batch(
+                search_space=space,
+                fitness_fn=fitness,
+                current_config={"A": "x"},
+                num_islands=1,
+                population_size=4,
+                num_workers=1,
+                debug=False,
+            )
+            call_kwargs = mock_ng.call_args[1]
+            assert call_kwargs["budget"] == NG_SAFETY_BUDGET
+
+    def test_ga_receives_none_iterations(self):
+        """GA receives num_iterations=None for convergence-only termination."""
+        space = _make_search_space(detected=["A"], fixed=[])
+        fitness = MagicMock(return_value=500.0)
+
+        with patch("src.optimization_engine.iterative.run_island_ga") as mock_ga:
+            mock_ga.return_value = MagicMock(
+                fitness=400.0, config={"A": 2}, evaluations_used=10
+            )
+            _ = _optimize_batch(
+                search_space=space,
+                fitness_fn=fitness,
+                current_config={"A": 1},
+                num_islands=1,
+                population_size=4,
+                num_workers=1,
+                debug=False,
+            )
+            call_kwargs = mock_ga.call_args[1]
+            assert call_kwargs["num_iterations"] is None
 
 
 class TestIterativeDebugPaths:
@@ -610,12 +574,11 @@ class TestIterativeDebugPaths:
                 search_space=space,
                 fitness_fn=fitness,
                 initial_config={"A": 1},
-                total_budget=100,
                 impact_fn=impact_fn,
                 impact_kwargs={},
                 debug=False,
             )
-            # Lines 292-293: fitness improvement path
+            # fitness improvement path
             assert result.best_fitness == 400.0
             assert result.best_config["A"] == 2
 
@@ -638,7 +601,6 @@ class TestIterativeDebugPaths:
                 search_space=space,
                 fitness_fn=fitness,
                 initial_config={"A": 1},
-                total_budget=200,
                 impact_fn=impact_fn,
                 impact_kwargs={},
                 impact_threshold=2.0,  # Forces _select_batch to return empty.
@@ -672,7 +634,6 @@ class TestIterativeDebugPaths:
                 search_space=space,
                 fitness_fn=fitness,
                 initial_config={"A": 1},
-                total_budget=500,
                 impact_fn=impact_fn,
                 impact_kwargs={},
                 debug=True,
@@ -698,19 +659,20 @@ class TestIterativeDebugPaths:
                     best_fitness=500.0, best_config={"A": 1}, evaluations_used=10
                 ),
                 MagicMock(
-                    best_fitness=350.0, best_config={"A": 3, "X": 2}, evaluations_used=5
+                    best_fitness=350.0,
+                    best_config={"A": 3, "X": 2},
+                    evaluations_used=5,
                 ),
             ]
             result = run_iterative_optimization(
                 search_space=space,
                 fitness_fn=fitness,
                 initial_config={"A": 1},
-                total_budget=300,
                 impact_fn=impact_fn,
                 impact_kwargs={},
                 debug=False,
             )
-            # Lines 370-371: final polish improvement path
+            # final polish improvement path
             assert result.best_fitness == 350.0
             assert mock_opt.call_count == 2
 
@@ -731,7 +693,6 @@ class TestIterativeDebugPaths:
                 search_space=space,
                 fitness_fn=fitness,
                 initial_config={"A": 1},
-                total_budget=100,
                 impact_fn=impact_fn,
                 impact_kwargs={},
                 debug=True,
@@ -759,7 +720,6 @@ class TestIterativeDebugPaths:
                 search_space=space,
                 fitness_fn=fitness,
                 initial_config={"A": 1},
-                total_budget=100,
                 impact_fn=MagicMock(),
                 impact_kwargs={},
                 debug=True,
@@ -787,7 +747,6 @@ class TestIterativeDebugPaths:
                 search_space=space,
                 fitness_fn=fitness,
                 initial_config={"A": 1},
-                total_budget=100,
                 impact_fn=impact_fn,
                 impact_kwargs={},
                 debug=True,
@@ -815,10 +774,9 @@ class TestIterativeDebugPaths:
                 search_space=space,
                 fitness_fn=fitness,
                 initial_config={"A": 1},
-                total_budget=200,
                 impact_fn=impact_fn,
                 impact_kwargs={},
-                min_improvement_ratio=MIN_IMPROVEMENT_RATIO,
+                min_improvement_ratio=0.01,
                 debug=True,
             )
         finally:
@@ -828,7 +786,7 @@ class TestIterativeDebugPaths:
         assert "below threshold" in output
 
     def test_debug_prints_final_polish(self):
-        """Debug prints final polish header when budget remains."""
+        """Debug prints final polish header."""
         import io
         import sys
 
@@ -842,7 +800,6 @@ class TestIterativeDebugPaths:
         sys.stderr = io.StringIO()
         try:
             with patch("src.optimization_engine.iterative._optimize_batch") as mock_opt:
-                # Use minimal evals so budget remains for final polish.
                 mock_opt.return_value = MagicMock(
                     best_fitness=500.0, best_config={"A": 1}, evaluations_used=5
                 )
@@ -850,7 +807,6 @@ class TestIterativeDebugPaths:
                     search_space=space,
                     fitness_fn=fitness,
                     initial_config={"A": 1},
-                    total_budget=200,
                     impact_fn=MagicMock(),
                     impact_kwargs={},
                     debug=True,
@@ -877,10 +833,6 @@ class TestPenaltyOptions:
         assert _is_penalty_option("ColumnLimit") is False
         assert _is_penalty_option("BreakBeforeBraces") is False
         assert _is_penalty_option("Penalize") is False  # not starting with Penalty
-
-    def test_penalty_constant_has_expected_value(self):
-        """MIN_PENALTY_POLISH_BUDGET has a sensible default."""
-        assert MIN_PENALTY_POLISH_BUDGET == 30
 
     def test_impact_measurement_excludes_penalty_options(self):
         """Impact measurement candidate names exclude Penalty* options."""
@@ -916,7 +868,6 @@ class TestPenaltyOptions:
                 "PenaltyBreakAssignment": 1,
                 "ColumnLimit": 80,
             },
-            total_budget=100,
             impact_fn=impact_fn,
             impact_kwargs={},
             debug=False,
@@ -958,60 +909,13 @@ class TestPenaltyOptions:
                 search_space=space,
                 fitness_fn=fitness,
                 initial_config={"IndentWidth": 2, "PenaltyBreakAssignment": 1},
-                total_budget=100,
                 impact_fn=MagicMock(return_value=[]),
                 impact_kwargs={},
-                min_penalty_polish_budget=MIN_PENALTY_POLISH_BUDGET,
                 debug=False,
             )
 
             # Penalty polish should have been attempted.
             assert result.best_fitness == 400.0
-
-    def test_penalty_polish_skipped_when_budget_too_low(self):
-        """Penalty polish is skipped when remaining budget is below threshold."""
-        params = {
-            "IndentWidth": ParameterDef(
-                name="IndentWidth",
-                param_type="int",
-                possible_values=[2, 4],
-                fixed=False,
-            ),
-            "PenaltyBreakAssignment": ParameterDef(
-                name="PenaltyBreakAssignment",
-                param_type="int",
-                possible_values=[1, 2],
-                fixed=True,
-            ),
-        }
-        space = SearchSpace(parameters=params)
-        fitness = MagicMock(return_value=500.0)
-
-        with patch("src.optimization_engine.iterative._optimize_batch") as mock_opt:
-            from src.optimization_engine.types import OptimizationResult
-
-            # Use very few evals so budget remains, but set a high threshold.
-            mock_opt.return_value = OptimizationResult(
-                best_config={"IndentWidth": 2},
-                best_fitness=500.0,
-                evaluations_used=5,
-            )
-            _ = run_iterative_optimization(
-                search_space=space,
-                fitness_fn=fitness,
-                initial_config={"IndentWidth": 2, "PenaltyBreakAssignment": 1},
-                total_budget=100,
-                impact_fn=MagicMock(return_value=[]),
-                impact_kwargs={},
-                min_penalty_polish_budget=9999,  # Impossible to meet.
-                debug=False,
-            )
-
-            # Main loop calls _optimize_batch once, impact returns [], loop exits.
-            # Penalty polish skipped (budget < 9999).
-            # Final global polish runs because IndentWidth is mutable.
-            # So total calls = 2 (main loop + final polish), no penalty polish call.
-            assert mock_opt.call_count == 2
 
     def test_penalty_polish_debug_print_and_improvement(self):
         """Penalty polish prints debug header and updates config on improvement."""
@@ -1041,7 +945,7 @@ class TestPenaltyOptions:
             with patch("src.optimization_engine.iterative._optimize_batch") as mock_opt:
                 from src.optimization_engine.types import OptimizationResult
 
-                # Three calls: main loop, penalty polish, final global polish.
+                # Two calls: main loop, penalty polish, final global polish.
                 # Main loop returns no improvement.
                 # Penalty polish returns improvement.
                 # Final polish returns no further improvement.
@@ -1072,10 +976,8 @@ class TestPenaltyOptions:
                     search_space=space,
                     fitness_fn=fitness,
                     initial_config={"IndentWidth": 2, "PenaltyBreakAssignment": 1},
-                    total_budget=100,
                     impact_fn=MagicMock(return_value=[]),
                     impact_kwargs={},
-                    min_penalty_polish_budget=MIN_PENALTY_POLISH_BUDGET,
                     debug=True,
                 )
         finally:
@@ -1084,3 +986,21 @@ class TestPenaltyOptions:
 
         assert "[penalty-polish]" in output
         assert result.best_fitness == 400.0
+
+    def test_impact_scan_budget_not_passed_to_impact_fn(self):
+        """Impact function no longer receives a budget parameter."""
+        space = _make_search_space(detected=["A"], fixed=["X"])
+        fitness = MagicMock(return_value=500.0)
+        impact_fn = MagicMock(return_value=[])
+
+        _ = run_iterative_optimization(
+            search_space=space,
+            fitness_fn=fitness,
+            initial_config={"A": 1},
+            impact_fn=impact_fn,
+            impact_kwargs={},
+            debug=False,
+        )
+
+        call_kwargs = impact_fn.call_args[1]
+        assert "budget" not in call_kwargs

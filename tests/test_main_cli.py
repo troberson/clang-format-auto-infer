@@ -294,10 +294,9 @@ class TestAnalyzeFlags:
             polish_passes=0,
             file_sample_percentage=100.0,
             jobs=1,
-            ng_budget=20,
             ng_optimizer="TwoPointsDE",
             max_restarts=1,
-            impact_budget=10,
+            convergence_threshold=20,
         )
         with patch("main.os.path.isdir", return_value=True):
             with patch("main.run_phased_optimization") as mock_phased:
@@ -320,6 +319,76 @@ class TestAnalyzeFlags:
         mock_bss.assert_called_once()
         call_kwargs = mock_bss.call_args
         assert call_kwargs[1].get("polish_undetect") is True
+
+    @patch("main.build_search_space")
+    @patch("main.load_forced_options")
+    @patch("main.load_json_option_values")
+    @patch("main.analyze_conventions")
+    def test_analyzer_option_not_in_options_info_merged_into_initial_config(
+        self, mock_analyze, mock_load_json, mock_load_forced, _mock_bss
+    ):
+        """When the analyzer detects an option not present in dump-config
+        (e.g., QualifierOrder when QualifierAlignment is not Custom), it must
+        be merged into both options_info and initial_config so the optimizer
+        can use it."""
+        import argparse
+
+        from src.analyze_conventions import DetectedOption
+
+        # Analyzer returns QualifierOrder, which is NOT in our minimal options_info
+        mock_analyze.return_value = {
+            "QualifierOrder": DetectedOption(
+                ["inline", "static", "type", "const"], "forced", "resolve"
+            )
+        }
+        mock_load_json.return_value = {}
+        mock_load_forced.return_value = {}
+        from main import cmd_optimize
+
+        args = argparse.Namespace(
+            repo_path="/tmp",
+            debug=False,
+            start_config_file=None,
+            dry_run=False,
+            no_analyze=False,
+            option_values_json_file=None,
+            forced_options_yaml_file=None,
+            output_file=None,
+            optimizer="genetic",
+            islands=1,
+            population_size=4,
+            iterations=1,
+            migration_interval=15,
+            polish_passes=0,
+            file_sample_percentage=100.0,
+            jobs=1,
+        )
+        with patch("main.os.path.isdir", return_value=True):
+            with patch("main.run_island_ga") as mock_ga:
+                from src.optimization_engine.types import Individual
+
+                mock_ga.return_value = Individual(config={}, fitness=0)
+                with patch("main.tempfile.mkdtemp", return_value="/tmp/test"):
+                    with patch("main.shutil.copytree"):
+                        with patch("main.run_command"):
+                            with patch(
+                                "main.generate_clang_format_config",
+                                return_value="",
+                            ):
+                                with patch("main.shutil.rmtree"):
+                                    cmd_optimize(args)
+
+        # Verify run_island_ga was called with initial_config containing QualifierOrder
+        mock_ga.assert_called_once()
+        call_kwargs = mock_ga.call_args[1]
+        initial_config = call_kwargs["initial_config"]
+        assert "QualifierOrder" in initial_config
+        assert initial_config["QualifierOrder"] == [
+            "inline",
+            "static",
+            "type",
+            "const",
+        ]
 
 
 class TestTempDirFeature:
@@ -984,8 +1053,8 @@ class TestCmdOptimizeErrorPaths:
             forced_options_yaml_file=None,
             output_file=None,
             optimizer="nevergrad",
-            ng_budget=10,
             ng_optimizer="DiscreteOnePlusOne",
+            convergence_threshold=20,
             file_sample_percentage=100.0,
             jobs=1,
         )
@@ -1027,7 +1096,7 @@ class TestCmdOptimizeErrorPaths:
             forced_options_yaml_file=None,
             output_file=None,
             optimizer="phased",
-            ng_budget=10,
+            convergence_threshold=20,
             islands=1,
             population_size=4,
             max_restarts=1,
@@ -1072,7 +1141,7 @@ class TestCmdOptimizeErrorPaths:
             forced_options_yaml_file=None,
             output_file=None,
             optimizer="iterative",
-            ng_budget=10,
+            convergence_threshold=20,
             islands=1,
             population_size=4,
             file_sample_percentage=100.0,
@@ -1331,11 +1400,10 @@ class TestPhasedPipelineWiring:
             forced_options_yaml_file=None,
             output_file=None,
             optimizer="phased",
-            ng_budget=10,
+            convergence_threshold=20,
             islands=1,
             population_size=4,
             max_restarts=1,
-            impact_budget=50,
             file_sample_percentage=100.0,
             jobs=1,
         )
@@ -1385,13 +1453,11 @@ class TestPhasedPipelineWiring:
                                                                 ):
                                                                     cmd_optimize(args)
                                                                     mock_impact.assert_called_once()
-                                                                    # Verify tier was overridden
+                                                                    # Verify budget parameter was removed
                                                                     call_kwargs = mock_impact.call_args
                                                                     assert (
-                                                                        call_kwargs.kwargs[
-                                                                            "budget"
-                                                                        ]
-                                                                        == 50
+                                                                        "budget"
+                                                                        not in call_kwargs.kwargs
                                                                     )
 
         captured = capsys.readouterr()

@@ -84,7 +84,6 @@ def analyze(
     indent_width = detect_indent_width(files)
     column_limit = detect_column_limit(files, percentile, indent_width or 4)
     language = detect_language(files)
-    qualifier_align = detect_qualifier_alignment(files)
     access_offset = detect_access_modifier_offset(files)
     max_empty = detect_max_empty_lines(files)
     hex_digit_case, prefix_case, exponent_case, suffix_case = (
@@ -104,7 +103,6 @@ def analyze(
 
     result: dict[str, Any] = {}
     result["Language"] = language
-    result["QualifierAlignment"] = qualifier_align
     result["IndentWidth"] = indent_width
     result["ColumnLimit"] = column_limit
     if access_offset is not None:
@@ -116,6 +114,8 @@ def analyze(
     result["BreakBeforeBraces"] = "Custom"
     result["SpaceBeforeParens"] = "Custom"
     result["SpacesInParens"] = "Custom"
+    result["QualifierAlignment"] = "Custom"
+    result["QualifierOrder"] = ["inline", "static", "type", "const"]
 
     # Brace wrapping sub-options — detected from source.
     if brace_control != "Leave":
@@ -264,6 +264,10 @@ def analyze_with_metadata(
     result["BreakBeforeBraces"] = DetectedOption("Custom", "forced")
     result["SpaceBeforeParens"] = DetectedOption("Custom", "forced")
     result["SpacesInParens"] = DetectedOption("Custom", "forced")
+    result["QualifierAlignment"] = DetectedOption("Custom", "forced")
+    result["QualifierOrder"] = DetectedOption(
+        ["inline", "static", "type", "const"], "forced"
+    )
 
     # Brace wrapping sub-options — detected from source
     if brace_control != "Leave":

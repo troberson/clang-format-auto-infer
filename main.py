@@ -47,6 +47,10 @@ debug_mode = False
 # for fitness evaluation across different runs with the same parameters.
 RANDOM_SEED = 42
 
+# Safety budget caps for optimizers that require a budget parameter.
+# Convergence is the real limiter; these are runaway guards.
+NG_SAFETY_BUDGET = 10_000
+
 OptionInfo = dict[str, str | list[str] | None]
 
 
@@ -421,7 +425,6 @@ def cmd_optimize(args: argparse.Namespace) -> None:
                 analysis_results=analysis_results,
                 base_options=options_info,
                 lookups=lookups,
-                budget=args.impact_budget,
                 process_id=0,
                 debug=debug_mode,
                 file_sample_percentage=args.file_sample_percentage,
@@ -468,8 +471,18 @@ def cmd_optimize(args: argparse.Namespace) -> None:
         # the repo's actual style rather than clang-format defaults.
         if analysis_results:
             for key, raw in analysis_results.items():
+                value = raw.value if hasattr(raw, "value") else raw
                 if key in initial_config:
-                    initial_config[key] = raw.value if hasattr(raw, "value") else raw
+                    initial_config[key] = value
+                elif key not in options_info:
+                    # Some detected options (e.g., QualifierOrder) are not in dump-config
+                    # unless their parent option is already set to a value that exposes them.
+                    # Merge them into options_info so the fitness evaluator includes them.
+                    options_info[key] = {
+                        "type": "List of Strings",
+                        "value": value,
+                    }
+                    initial_config[key] = value
 
         fitness_fn = make_fitness_function(
             repo_paths=temp_repo_paths,
@@ -510,7 +523,7 @@ def cmd_optimize(args: argparse.Namespace) -> None:
             result = run_nevergrad_optimization(
                 search_space=search_space,
                 objective=fitness_fn,
-                budget=args.ng_budget,
+                budget=NG_SAFETY_BUDGET,
                 num_workers=num_jobs,
                 optimizer_name=args.ng_optimizer,
                 debug=debug_mode,
@@ -524,11 +537,11 @@ def cmd_optimize(args: argparse.Namespace) -> None:
                 search_space=search_space,
                 fitness_fn=fitness_fn,
                 initial_config=initial_config,
-                total_budget=args.ng_budget,
                 num_islands=args.islands,
                 population_size=args.population_size,
                 num_workers=num_jobs,
                 max_restarts=args.max_restarts,
+                convergence_threshold=args.convergence_threshold,
                 debug=debug_mode,
             )
             optimized_options_info = config_to_flat_options(
@@ -539,7 +552,6 @@ def cmd_optimize(args: argparse.Namespace) -> None:
                 search_space=search_space,
                 fitness_fn=fitness_fn,
                 initial_config=initial_config,
-                total_budget=args.ng_budget,
                 impact_fn=measure_remaining_impact,
                 impact_kwargs=dict(
                     repo_path=temp_repo_paths[0],
@@ -553,6 +565,7 @@ def cmd_optimize(args: argparse.Namespace) -> None:
                 num_islands=args.islands,
                 population_size=args.population_size,
                 num_workers=num_jobs,
+                convergence_threshold=args.convergence_threshold,
                 debug=debug_mode,
             )
             optimized_options_info = config_to_flat_options(
@@ -787,10 +800,10 @@ def main() -> None:
         help="[Genetic Algorithm] Resume optimization from a checkpoint file.",
     )
     _ = opt_parser.add_argument(
-        "--ng-budget",
+        "--convergence-threshold",
         type=int,
-        default=1000,
-        help="[Nevergrad/Phased] Total number of evaluations (budget) for the optimizer.",
+        default=20,
+        help="Stop optimizer sub-runs when no improvement occurs for this many consecutive generations/evaluations. Default 20.",
     )
     _ = opt_parser.add_argument(
         "--ng-optimizer",
@@ -840,13 +853,6 @@ def main() -> None:
         default=1,
         help="[Phased] Maximum restarts per phase on stagnation. Default: 1.",
     )
-    _ = opt_parser.add_argument(
-        "--impact-budget",
-        type=int,
-        default=50,
-        help="[Phased/Iterative] Evaluation budget for empirical impact measurement. Default: 50.",
-    )
-
     # --- fetch-options subcommand ---
     fetch_parser = subparsers.add_parser(
         "fetch-options",

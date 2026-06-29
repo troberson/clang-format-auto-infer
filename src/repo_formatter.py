@@ -170,6 +170,7 @@ def run_clang_format_and_count_changes(
                 "Unsuitable",
                 "unknown enumerated scalar",
                 "Error reading .clang-format",
+                "Missing ",
             ]
             is_invalid_config = any(p in error_output for p in invalid_config_patterns)
 

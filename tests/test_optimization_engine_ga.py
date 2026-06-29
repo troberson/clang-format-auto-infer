@@ -85,14 +85,14 @@ class TestMutate:
             }
         )
         ind = Individual(config={"x": "hello"})
-        _ = mutate(ind, ss, _fitness, random.Random(42), debug=True, debug_prefix="W: ")
+        _ = mutate(ind, ss, _fitness, random.Random(42), debug=True, tag="W")
         captured = capsys.readouterr()
         assert "No mutable options" in captured.err
 
     def test_debug_prints_mutating(self, capsys):
         ss = _make_search_space()
         ind = Individual(config={"a": 3, "b": True})
-        _ = mutate(ind, ss, _fitness, random.Random(42), debug=True, debug_prefix="W: ")
+        _ = mutate(ind, ss, _fitness, random.Random(42), debug=True, tag="W")
         captured = capsys.readouterr()
         assert "Mutating" in captured.err
 
@@ -254,7 +254,7 @@ class TestRunIslandGa:
         )
         assert best.fitness == 0.0
         captured = capsys.readouterr()
-        assert "Iter 1/100 fitness=0.0" in captured.err
+        assert "Iter 1 fitness=0.0" in captured.err
 
     def test_debug_prints_iterations(self, capsys):
         ss = _make_search_space()
@@ -270,7 +270,7 @@ class TestRunIslandGa:
             random_seed=42,
         )
         captured = capsys.readouterr()
-        assert "Iter 1/2" in captured.err
+        assert "Iter 1" in captured.err and "Iter 2" in captured.err
 
     def test_min_improvement_ratio_treats_tiny_improvements_as_noise(self, capsys):
         """Tiny improvements below min_improvement_ratio do not reset convergence."""
@@ -412,26 +412,7 @@ class TestRunIslandGa:
         )
         assert best.fitness == 0.0
         captured = capsys.readouterr()
-        assert "Iter 1/100 fitness=0.0" in captured.err
-
-    def test_parallel_islands_budget_check(self, capsys):
-        """Budget check works with parallel islands."""
-        ss = _make_search_space()
-        initial = {"a": 3, "b": True}
-        _ = run_island_ga(
-            initial,
-            ss,
-            _fitness,
-            num_islands=2,
-            population_size=10,
-            num_iterations=100,
-            budget=15,
-            debug=True,
-            random_seed=42,
-            num_workers=2,
-        )
-        captured = capsys.readouterr()
-        assert "Budget exhausted" in captured.err
+        assert "Iter 1 fitness=0.0" in captured.err
 
     def test_single_worker_is_sequential(self):
         """num_workers=1 uses sequential path."""
@@ -504,18 +485,18 @@ class TestInitializePopulation:
         """Individual 0 is an exact copy of initial_config."""
         ss = _make_search_space()
         initial = {"a": 3, "b": True, "c": "x"}
-        pop, evals = _initialize_population(
+        pop = _initialize_population(
             initial, ss, _fitness, island_size=5, rng=random.Random(42)
         )
         assert pop[0].config == initial
         assert pop[0].fitness == _fitness(initial)
-        assert evals == 5
+        assert len(pop) == 5
 
     def test_has_diversity(self):
         """At least some individuals differ from the anchor."""
         ss = _make_search_space()
         initial = {"a": 3, "b": True, "c": "x"}
-        pop, _ = _initialize_population(
+        pop = _initialize_population(
             initial, ss, _fitness, island_size=10, rng=random.Random(42)
         )
         unique_configs = set(str(ind.config) for ind in pop)
@@ -525,7 +506,7 @@ class TestInitializePopulation:
         """Every individual contains all keys from initial_config."""
         ss = _make_search_space()
         initial = {"a": 3, "b": True, "c": "x"}
-        pop, _ = _initialize_population(
+        pop = _initialize_population(
             initial, ss, _fitness, island_size=5, rng=random.Random(42)
         )
         for ind in pop:
@@ -535,7 +516,7 @@ class TestInitializePopulation:
         """Every individual has a finite fitness value."""
         ss = _make_search_space()
         initial = {"a": 3, "b": True, "c": "x"}
-        pop, _ = _initialize_population(
+        pop = _initialize_population(
             initial, ss, _fitness, island_size=5, rng=random.Random(42)
         )
         for ind in pop:
@@ -545,7 +526,7 @@ class TestInitializePopulation:
         """diversity_rate=0 produces all identical individuals."""
         ss = _make_search_space()
         initial = {"a": 3, "b": True, "c": "x"}
-        pop, _ = _initialize_population(
+        pop = _initialize_population(
             initial,
             ss,
             _fitness,
@@ -566,7 +547,7 @@ class TestInitializePopulation:
             }
         )
         initial = {"a": 3}
-        pop, _ = _initialize_population(
+        pop = _initialize_population(
             initial,
             ss,
             _fitness,
@@ -584,12 +565,11 @@ class TestInitializePopulation:
         """island_size=1 returns just the anchor individual."""
         ss = _make_search_space()
         initial = {"a": 3, "b": True, "c": "x"}
-        pop, evals = _initialize_population(
+        pop = _initialize_population(
             initial, ss, _fitness, island_size=1, rng=random.Random(42)
         )
         assert len(pop) == 1
         assert pop[0].config == initial
-        assert evals == 1
 
     def test_no_mutable_params_falls_back_to_clones(self):
         """When no mutable params exist, all individuals are identical clones."""
@@ -599,7 +579,7 @@ class TestInitializePopulation:
             }
         )
         initial = {"x": "hello"}
-        pop, _ = _initialize_population(
+        pop = _initialize_population(
             initial, ss, _fitness, island_size=5, rng=random.Random(42)
         )
         for ind in pop:

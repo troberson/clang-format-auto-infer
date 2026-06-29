@@ -13,6 +13,7 @@ from typing import Any
 
 import nevergrad as ng  # type: ignore[import-untyped]
 
+from ..utils import dbg
 from .types import OptimizationResult, SearchSpace
 
 
@@ -93,7 +94,7 @@ def run_nevergrad_optimization(
     debug: bool = False,
     initial_config: dict[str, Any] | None = None,
     convergence_threshold: int | None = None,
-    debug_prefix: str = "",
+    tag: str = "",
 ) -> OptimizationResult:
     """Run a generic Nevergrad optimization loop.
 
@@ -107,7 +108,7 @@ def run_nevergrad_optimization(
         initial_config: Base config to merge with optimized values.
         convergence_threshold: If set, stop early when no improvement occurs
             for this many consecutive evaluations. None means run full budget.
-        debug_prefix: Prefix prepended to all debug print lines.
+        tag: Tag used for debug output (e.g., phase name).
 
     Returns:
         OptimizationResult with best config and fitness.
@@ -138,10 +139,10 @@ def run_nevergrad_optimization(
         sys.exit(1)
 
     print(
-        f"{debug_prefix}Starting Nevergrad optimization with {optimizer_name}...",
+        f"[{tag}] Starting Nevergrad optimization with {optimizer_name}...",
         file=sys.stderr,
     )
-    print(f"{debug_prefix}Budget: {budget}, Workers: {num_workers}", file=sys.stderr)
+    print(f"[{tag}] Budget: {budget}, Workers: {num_workers}", file=sys.stderr)
 
     # State
     best_overall_fitness = float("inf")
@@ -167,9 +168,9 @@ def run_nevergrad_optimization(
             pending_futures[future] = candidate
             current_eval_count += 1
             if debug:
-                print(
-                    f"{debug_prefix}Nevergrad: Submitted task. Active: {len(pending_futures)}/{num_workers}. Evaluations: {current_eval_count}/{budget}",
-                    file=sys.stderr,
+                dbg(
+                    tag,
+                    f"Submitted task. Active: {len(pending_futures)}/{num_workers}. Evaluations: {current_eval_count}/{budget}",
                 )
             return True
         return False
@@ -182,7 +183,7 @@ def run_nevergrad_optimization(
     try:
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=num_workers)
         print(
-            f"{debug_prefix}Nevergrad: Using ThreadPoolExecutor with {num_workers} workers.",
+            f"[{tag}] Nevergrad: Using ThreadPoolExecutor with {num_workers} workers.",
             file=sys.stderr,
         )
 
@@ -210,7 +211,7 @@ def run_nevergrad_optimization(
                         best_overall_fitness = loss
                         no_improve_count = 0
                         print(
-                            f"{debug_prefix}    New overall best fitness: {best_overall_fitness}",
+                            f"[{tag}] New overall best fitness: {best_overall_fitness}",
                             file=sys.stderr,
                         )
                     else:
@@ -222,32 +223,29 @@ def run_nevergrad_optimization(
                         and no_improve_count >= convergence_threshold
                     ):
                         print(
-                            f"{debug_prefix}Nevergrad: Converged after {len(best_fitness_history)} evaluations (no improvement for {convergence_threshold} consecutive evaluations).",
+                            f"[{tag}] Nevergrad: Converged after {len(best_fitness_history)} evaluations (no improvement for {convergence_threshold} consecutive evaluations).",
                             file=sys.stderr,
                         )
                         interrupted = True
 
                     if debug:
-                        print(
-                            f"{debug_prefix}Nevergrad: Evaluation {len(best_fitness_history)} (Loss: {loss}, Best: {best_overall_fitness})",
-                            file=sys.stderr,
+                        dbg(
+                            tag,
+                            f"Evaluation {len(best_fitness_history)} (Loss: {loss}, Best: {best_overall_fitness})",
                         )
                     elif len(best_fitness_history) % 50 == 0:
                         print(
-                            f"{debug_prefix}--- Evaluation {len(best_fitness_history)}/{budget} (Best: {best_overall_fitness}) ---",
+                            f"[{tag}] --- Evaluation {len(best_fitness_history)}/{budget} (Best: {best_overall_fitness}) ---",
                             file=sys.stderr,
                         )
 
                 except KeyboardInterrupt:  # pragma: no cover
-                    print(
-                        f"\n{debug_prefix}Ctrl-C detected. Terminating...",
-                        file=sys.stderr,
-                    )
+                    print(f"\n[{tag}] Ctrl-C detected. Terminating...", file=sys.stderr)
                     interrupted = True
                     break
                 except Exception as e:
                     print(
-                        f"{debug_prefix}Nevergrad: Error during evaluation: {e}",
+                        f"[{tag}] Nevergrad: Error during evaluation: {e}",
                         file=sys.stderr,
                     )
                     optimizer.tell(candidate, float("inf"))
@@ -259,30 +257,24 @@ def run_nevergrad_optimization(
         recommendation = optimizer.provide_recommendation()
 
     except KeyboardInterrupt:  # pragma: no cover
-        print(
-            f"\n{debug_prefix}Ctrl-C detected. Terminating...",
-            file=sys.stderr,
-        )
+        print(f"\n[{tag}] Ctrl-C detected. Terminating...", file=sys.stderr)
         interrupted = True
         recommendation = optimizer.provide_recommendation()
     except Exception as e:  # pragma: no cover
-        print(
-            f"{debug_prefix}Error during Nevergrad optimization: {e}",
-            file=sys.stderr,
-        )
+        print(f"[{tag}] Error during Nevergrad optimization: {e}", file=sys.stderr)
         recommendation = optimizer.provide_recommendation()
     finally:
         if executor:
-            print(f"{debug_prefix}Shutting down ThreadPoolExecutor...", file=sys.stderr)
+            print(f"[{tag}] Shutting down ThreadPoolExecutor...", file=sys.stderr)
             for future in pending_futures.keys():  # pragma: no cover
                 _ = future.cancel()
             executor.shutdown(wait=True)
-            print(f"{debug_prefix}ThreadPoolExecutor shut down.", file=sys.stderr)
+            print(f"[{tag}] ThreadPoolExecutor shut down.", file=sys.stderr)
 
     # Build result
     if recommendation is None:  # pyright: ignore[reportUnnecessaryComparison]
         print(
-            f"{debug_prefix}Warning: No recommendation from Nevergrad. Returning initial config.",
+            f"[{tag}] Warning: No recommendation from Nevergrad. Returning initial config.",
             file=sys.stderr,
         )
         base_config = dict(initial_config) if initial_config else {}
@@ -292,7 +284,7 @@ def run_nevergrad_optimization(
     best_config.update(_convert_param_types(recommendation.kwargs, search_space))
 
     print(
-        f"\n{debug_prefix}Nevergrad optimization finished. Best fitness: {best_overall_fitness}",
+        f"\n[{tag}] Nevergrad optimization finished. Best fitness: {best_overall_fitness}",
         file=sys.stderr,
     )
     return OptimizationResult(

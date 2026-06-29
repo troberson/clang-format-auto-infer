@@ -205,7 +205,6 @@ class TestFullPipelineWiring:
             search_space=ss,
             fitness_fn=fitness,
             initial_config={"IndentWidth": 4, "UseTab": False},
-            total_budget=30,
             num_islands=1,
             population_size=4,
             num_workers=1,

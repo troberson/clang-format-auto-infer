@@ -68,11 +68,10 @@ def build_search_space(
             else:
                 value = raw
                 tier = "polish"
-            possible_values = list(
-                lookups.json_options_lookup.get(full_path, {}).get(
-                    "possible_values", [value]
-                )
-            )
+            possible_values = lookups.json_options_lookup.get(full_path, {}).get(
+                "possible_values"
+            ) or [value]
+            possible_values = list(possible_values)
             # Force penalty options to be fixed, even if detected.
             is_penalty = full_path.startswith("Penalty")
             parameters[full_path] = ParameterDef(
