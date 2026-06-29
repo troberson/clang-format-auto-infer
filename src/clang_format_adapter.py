@@ -7,6 +7,7 @@ optimization_engine types (SearchSpace, Individual, etc.).
 from __future__ import annotations
 
 import copy
+import subprocess
 import sys
 import threading
 from collections.abc import Callable
@@ -20,6 +21,94 @@ from .repo_formatter import run_clang_format_and_count_changes
 
 
 CURATED_PENALTY_VALUES = [2, 10, 50, 150, 1000, 10000]
+
+
+def _dump_fitness_zero_diagnostics(  # pragma: no cover
+    repo_path: str,
+    repo_idx: int,
+    config_string: str,
+    _process_id: int,
+) -> None:
+    """Dump diagnostics when fitness=0 is detected, then exit.
+
+    This helps investigate why clang-format made zero changes.
+    """
+    err = sys.stderr
+    print("\n" + "=" * 70, file=err)
+    print(f"FITNESS=0 DETECTED on repo {repo_idx} ({repo_path})", file=err)
+    print("=" * 70, file=err)
+
+    # Show the config that was applied
+    print("\n--- .clang-format config ---", file=err)
+    print(config_string, file=err)
+
+    # Show git status
+    print("\n--- git status ---", file=err)
+    result = subprocess.run(
+        ["git", "status", "--short"],
+        capture_output=True,
+        text=True,
+        cwd=repo_path,
+        timeout=30,
+    )
+    if result.stdout.strip():
+        print(result.stdout, file=err)
+    else:
+        print("(clean)", file=err)
+
+    # Show git diff (first 100 lines)
+    print("\n--- git diff (first 100 lines) ---", file=err)
+    result = subprocess.run(
+        ["git", "diff", "--stat"],
+        capture_output=True,
+        text=True,
+        cwd=repo_path,
+        timeout=30,
+    )
+    print(result.stdout, file=err)
+
+    # Show git log (last commit)
+    print("\n--- git log --oneline -1 ---", file=err)
+    result = subprocess.run(
+        ["git", "log", "--oneline", "-1"],
+        capture_output=True,
+        text=True,
+        cwd=repo_path,
+        timeout=30,
+    )
+    print(result.stdout, file=err)
+
+    # List files in repo
+    print("\n--- tracked files ---", file=err)
+    result = subprocess.run(
+        ["git", "ls-files"],
+        capture_output=True,
+        text=True,
+        cwd=repo_path,
+        timeout=30,
+    )
+    print(result.stdout, file=err)
+
+    # Try running clang-format manually and show output
+    print("\n--- manual clang-format test ---", file=err)
+    result = subprocess.run(
+        ["clang-format", "--version"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    print(result.stdout.strip(), file=err)
+
+    print("\n" + "=" * 70, file=err)
+    print(
+        f"Repo preserved at: {repo_path}",
+        file=err,
+    )
+    print(
+        "Exiting without cleanup. Inspect the repo above.",
+        file=err,
+    )
+    print("=" * 70 + "\n", file=err)
 
 
 def build_search_space(
@@ -228,6 +317,11 @@ class FitnessEvaluator:
 
             if changes == -1:
                 return float("inf")
+            if changes == 0 and self._debug:  # pragma: no cover
+                _dump_fitness_zero_diagnostics(
+                    repo_path, repo_idx, config_string, self._process_id
+                )
+                sys.exit(1)
             return changes
         finally:
             # Release the per-repo lock so other threads can use this repo

@@ -150,6 +150,13 @@ def run_nevergrad_optimization(
 
     # State
     best_overall_fitness = float("inf")
+    # Seed with the fitness of the initial config so we only report "new best"
+    # when nevergrad actually improves on the GA's result.
+    if initial_config is not None:
+        try:
+            best_overall_fitness = objective(initial_config)
+        except Exception:  # pragma: no cover
+            pass  # keep inf if evaluation fails
     best_fitness_history: list[float] = []
     current_eval_count = 0
     interrupted = False
