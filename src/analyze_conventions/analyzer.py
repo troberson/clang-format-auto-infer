@@ -268,6 +268,8 @@ def analyze_with_metadata(
     result["QualifierOrder"] = DetectedOption(
         ["inline", "static", "type", "const"], "forced"
     )
+    # DisableFormat must always be false — true disables all formatting.
+    result["DisableFormat"] = DetectedOption(False, "forced")
 
     # Brace wrapping sub-options — detected from source
     if brace_control != "Leave":
