@@ -138,20 +138,10 @@ def _fill_missing_sub_options(json_options_lookup: dict[str, Any]) -> None:
                 if existing.get("possible_values"):
                     continue
                 # Option exists in JSON but has no possible_values.
-                # Infer them from dump-config type.
+                # Only fill booleans — integers get a wide range of valid
+                # values depending on the option, so a generic range is unsafe.
                 if py_type == "bool":  # pragma: no cover
                     existing["possible_values"] = ["true", "false"]
-                elif py_type == "int":  # pragma: no cover
-                    existing["possible_values"] = [
-                        "-4",
-                        "-2",
-                        "0",
-                        "1",
-                        "2",
-                        "3",
-                        "4",
-                        "8",
-                    ]
                 continue
 
             # Only add new entries if the parent option exists in the JSON lookup.
@@ -159,16 +149,12 @@ def _fill_missing_sub_options(json_options_lookup: dict[str, Any]) -> None:
             if parent not in json_options_lookup:
                 continue
             # Infer clang-format type from Python type.
+            # Only fill booleans — integers are left without possible_values
+            # because a generic range is unsafe for options like ColumnLimit.
             if py_type == "bool":
                 json_options_lookup[name] = {
                     "type": "bool",
                     "possible_values": ["true", "false"],
-                }
-            elif py_type == "int":  # pragma: no cover
-                # Integer options get a reasonable range.
-                json_options_lookup[name] = {
-                    "type": "int",
-                    "possible_values": ["-4", "-2", "0", "1", "2", "3", "4", "8"],
                 }
             # Strings/lists are left without possible_values; the optimizer
             # will treat them as fixed at their dump-config value.
