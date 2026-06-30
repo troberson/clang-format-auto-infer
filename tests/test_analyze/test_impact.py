@@ -348,13 +348,8 @@ class TestImpactScore:
 
 
 class TestMeasureRemainingImpact:
-    @patch("src.analyze_conventions.impact.run_nevergrad_optimization")
-    def test_returns_ranked_scores(self, mock_ng):
-        mock_ng.return_value = OptimizationResult(
-            best_config={"IndentWidth": 8, "ColumnLimit": 100},
-            best_fitness=300.0,
-        )
-
+    def test_returns_ranked_scores(self):
+        """Exhaustive scan tries all values per option and ranks by best delta."""
         base = _make_base_options()
         current_config = {"IndentWidth": 4, "ColumnLimit": 80}
         lookups = _make_lookups(
@@ -364,12 +359,17 @@ class TestMeasureRemainingImpact:
             }
         )
 
+        # baseline=500, then IndentWidth values (2,4,8), then ColumnLimit values (80,100,120)
         with patch("src.repo_formatter.run_clang_format_and_count_changes") as mock_cf:
             mock_cf.side_effect = [
-                500,
-                450,
-                470,
-            ]  # initial, solo IndentWidth, solo ColumnLimit
+                500,  # baseline
+                450,  # IndentWidth=2 (delta=50)
+                500,  # IndentWidth=4 (delta=0)
+                480,  # IndentWidth=8 (delta=20)
+                500,  # ColumnLimit=80 (delta=0)
+                460,  # ColumnLimit=100 (delta=40)
+                490,  # ColumnLimit=120 (delta=10)
+            ]
             scores = measure_remaining_impact(
                 "/tmp/repo",
                 ["IndentWidth", "ColumnLimit"],
@@ -377,18 +377,16 @@ class TestMeasureRemainingImpact:
                 lookups,
                 current_config,
             )
-        # Both options changed, so both should have scores.
+        # Both options improved, so both should have scores.
         assert len(scores) == 2
-        # Sorted by delta descending.
-        assert scores[0].fitness_delta >= scores[1].fitness_delta
+        # Sorted by delta descending: IndentWidth(50) > ColumnLimit(40)
+        assert scores[0].name == "IndentWidth"
+        assert scores[0].fitness_delta == 50
+        assert scores[1].name == "ColumnLimit"
+        assert scores[1].fitness_delta == 40
 
-    @patch("src.analyze_conventions.impact.run_nevergrad_optimization")
-    def test_unchanged_options_have_no_score(self, mock_ng):
-        mock_ng.return_value = OptimizationResult(
-            best_config={"IndentWidth": 4, "ColumnLimit": 80},
-            best_fitness=500.0,
-        )
-
+    def test_unchanged_options_have_no_score(self):
+        """If no value improves over baseline, option gets no score."""
         base = _make_base_options()
         current_config = {"IndentWidth": 4, "ColumnLimit": 80}
         lookups = _make_lookups(
@@ -398,6 +396,7 @@ class TestMeasureRemainingImpact:
             }
         )
 
+        # baseline=500, all other values are worse or equal
         with patch("src.repo_formatter.run_clang_format_and_count_changes") as mock_cf:
             mock_cf.return_value = 500
             scores = measure_remaining_impact(
@@ -407,7 +406,6 @@ class TestMeasureRemainingImpact:
                 lookups,
                 current_config,
             )
-        # Neither option changed, so no scores.
         assert scores == []
 
     def test_no_candidates_returns_empty(self):
@@ -437,13 +435,8 @@ class TestMeasureRemainingImpact:
         )
         assert scores == []
 
-    @patch("src.analyze_conventions.impact.run_nevergrad_optimization")
-    def test_uses_base_options_value_when_not_in_config(self, mock_ng):
-        mock_ng.return_value = OptimizationResult(
-            best_config={"IndentWidth": 8},
-            best_fitness=400.0,
-        )
-
+    def test_uses_base_options_value_when_not_in_config(self):
+        """When option is missing from config, falls back to base_options value."""
         base = _make_base_options()
         # IndentWidth not in current_config, should fall back to base_options.
         current_config: dict[str, Any] = {}
@@ -451,8 +444,14 @@ class TestMeasureRemainingImpact:
             json_options={"IndentWidth": {"possible_values": [2, 4, 8]}}
         )
 
+        # baseline=500, then IndentWidth=2,4,8
         with patch("src.repo_formatter.run_clang_format_and_count_changes") as mock_cf:
-            mock_cf.side_effect = [500, 450]  # initial, solo
+            mock_cf.side_effect = [
+                500,  # baseline
+                450,  # IndentWidth=2 (delta=50)
+                500,  # IndentWidth=4 (delta=0)
+                480,  # IndentWidth=8 (delta=20)
+            ]
             scores = measure_remaining_impact(
                 "/tmp/repo",
                 ["IndentWidth"],
@@ -462,45 +461,27 @@ class TestMeasureRemainingImpact:
             )
         assert len(scores) == 1
         assert scores[0].name == "IndentWidth"
+        assert scores[0].fitness_delta == 50
 
-    @patch("src.analyze_conventions.impact.run_nevergrad_optimization")
-    def test_uses_safety_budget(self, mock_ng):
-        mock_ng.return_value = OptimizationResult(
-            best_config={"IndentWidth": 8},
-            best_fitness=400.0,
-        )
-
-        base = _make_base_options()
-        lookups = _make_lookups(
-            json_options={"IndentWidth": {"possible_values": [2, 4, 8]}}
-        )
-
-        with patch("src.repo_formatter.run_clang_format_and_count_changes"):
-            _ = measure_remaining_impact(
-                "/tmp/repo",
-                ["IndentWidth"],
-                base,
-                lookups,
-                {"IndentWidth": 4},
-            )
-        call_kwargs = mock_ng.call_args.kwargs
-        assert call_kwargs["budget"] == 10_000
-
-    @patch("src.analyze_conventions.impact.run_nevergrad_optimization")
-    def test_penalty_options_get_curated_values(self, mock_ng):
+    def test_penalty_options_get_curated_values(self):
         """Penalty options use curated values when not in json lookup."""
-        mock_ng.return_value = OptimizationResult(
-            best_config={"PenaltyExcessCharacter": 10},
-            best_fitness=400.0,
-        )
-
         base = {
             "PenaltyExcessCharacter": {"type": "int", "value": 20},
         }
         # No json lookup entry for this penalty option.
         lookups = _make_lookups(json_options={})
 
-        with patch("src.repo_formatter.run_clang_format_and_count_changes"):
+        # baseline=500, then curated penalty values (2,10,50,150,1000,10000)
+        with patch("src.repo_formatter.run_clang_format_and_count_changes") as mock_cf:
+            mock_cf.side_effect = [
+                500,  # baseline
+                450,  # PenaltyExcessCharacter=2 (delta=50)
+                480,  # =10
+                490,  # =50
+                495,  # =150
+                498,  # =1000
+                499,  # =10000
+            ]
             scores = measure_remaining_impact(
                 "/tmp/repo",
                 ["PenaltyExcessCharacter"],
@@ -508,11 +489,11 @@ class TestMeasureRemainingImpact:
                 lookups,
                 {"PenaltyExcessCharacter": 20},
             )
-        # Should have been unlocked with curated values.
+        # Should have been tested with curated values.
         assert len(scores) == 1
+        assert scores[0].fitness_delta == 50
 
-    @patch("src.analyze_conventions.impact.run_nevergrad_optimization")
-    def test_skips_single_value_options(self, mock_ng):
+    def test_skips_single_value_options(self):
         """Options with only one possible value are skipped."""
         base = _make_base_options()
         lookups = _make_lookups(json_options={"IndentWidth": {"possible_values": [4]}})
@@ -526,4 +507,88 @@ class TestMeasureRemainingImpact:
         )
         # Only one value, so nothing to optimize.
         assert scores == []
-        mock_ng.assert_not_called()
+
+    def test_baseline_error_returns_empty(self):
+        """If baseline clang-format run fails, return empty scores."""
+        base = _make_base_options()
+        lookups = _make_lookups(
+            json_options={"IndentWidth": {"possible_values": [2, 4, 8]}}
+        )
+
+        with patch("src.repo_formatter.run_clang_format_and_count_changes") as mock_cf:
+            mock_cf.return_value = -1
+            scores = measure_remaining_impact(
+                "/tmp/repo",
+                ["IndentWidth"],
+                base,
+                lookups,
+                {"IndentWidth": 4},
+            )
+        assert scores == []
+
+    def test_skips_option_not_in_initial_flat(self):
+        """If option name is not in initial_flat, it is skipped."""
+        base = _make_base_options()
+        lookups = _make_lookups(
+            json_options={"IndentWidth": {"possible_values": [2, 4, 8]}}
+        )
+
+        with patch("src.repo_formatter.run_clang_format_and_count_changes") as mock_cf:
+            mock_cf.return_value = 500
+            scores = measure_remaining_impact(
+                "/tmp/repo",
+                ["IndentWidth"],
+                base,
+                lookups,
+                {},  # IndentWidth not in config, so not in initial_flat
+            )
+        assert scores == []
+
+    def test_forced_options_override_in_loop(self):
+        """Forced options are applied during each value test."""
+        base = _make_base_options()
+        lookups = _make_lookups(
+            json_options={"IndentWidth": {"possible_values": [2, 4, 8]}},
+            forced_options={"UseTab": True},
+        )
+
+        with patch("src.repo_formatter.run_clang_format_and_count_changes") as mock_cf:
+            mock_cf.side_effect = [
+                500,  # baseline
+                450,  # IndentWidth=2
+                500,  # IndentWidth=4
+                480,  # IndentWidth=8
+            ]
+            scores = measure_remaining_impact(
+                "/tmp/repo",
+                ["IndentWidth"],
+                base,
+                lookups,
+                {"IndentWidth": 4},
+            )
+        assert len(scores) == 1
+        assert scores[0].fitness_delta == 50
+
+    def test_value_error_continues(self):
+        """If a value test returns -1, it is skipped and next value is tried."""
+        base = _make_base_options()
+        lookups = _make_lookups(
+            json_options={"IndentWidth": {"possible_values": [2, 4, 8]}}
+        )
+
+        with patch("src.repo_formatter.run_clang_format_and_count_changes") as mock_cf:
+            mock_cf.side_effect = [
+                500,  # baseline
+                -1,  # IndentWidth=2 (error, skip)
+                500,  # IndentWidth=4 (delta=0)
+                480,  # IndentWidth=8 (delta=20)
+            ]
+            scores = measure_remaining_impact(
+                "/tmp/repo",
+                ["IndentWidth"],
+                base,
+                lookups,
+                {"IndentWidth": 4},
+            )
+        assert len(scores) == 1
+        assert scores[0].fitness_delta == 20

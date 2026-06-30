@@ -68,15 +68,15 @@ def measure_remaining_impact(
     file_sample_percentage: float = 100.0,
     random_seed: int = 42,
 ) -> list[ImpactScore]:
-    """Score the impact of remaining (fixed) options and return a ranked list.
+    """Score the impact of remaining options by trying all values individually.
 
-    Builds a search space from the candidate option names, runs nevergrad,
-    and measures how much each option contributed to fitness improvement by
-    comparing the best config to the initial config.
+    For each candidate option, tries all possible values (keeping everything
+    else fixed) and reports the best fitness delta. This is more thorough than
+    relying on a black-box optimizer to discover impactful options.
 
     Args:
         repo_path: Path to the git repository.
-        candidate_names: Names of options to score (should be currently fixed).
+        candidate_names: Names of options to score.
         base_options: Flat options dict from clang-format --dump-config.
         lookups: Contains json_options_lookup and forced_options_lookup.
         current_config: Current best config values (starting point).
@@ -89,37 +89,30 @@ def measure_remaining_impact(
         List of ImpactScore sorted by fitness_delta descending (most impactful first).
         Empty list if no candidates have optimizable values.
     """
+    from ..repo_formatter import run_clang_format_and_count_changes
+
     # Build search space from candidate options.
     parameters: dict[str, ParameterDef] = {}
     skipped_not_in_base = 0
     skipped_no_values = 0
     skipped_single_value = 0
 
-    skipped_not_in_base_names: list[str] = []
-    skipped_no_values_names: list[str] = []
-    skipped_single_value_names: list[str] = []
-
     for full_path in candidate_names:
         if full_path not in base_options:
             skipped_not_in_base += 1
-            skipped_not_in_base_names.append(full_path)
             continue
 
         json_info = lookups.json_options_lookup.get(full_path, {})
         possible_values = json_info.get("possible_values")
         if not possible_values:
-            # Penalty options get curated values.
             if full_path.startswith("Penalty"):
                 possible_values = list(CURATED_PENALTY_VALUES)
             else:
                 skipped_no_values += 1
-                skipped_no_values_names.append(full_path)
                 continue
 
-        # Skip if only one possible value.
         if len(possible_values) <= 1:
             skipped_single_value += 1
-            skipped_single_value_names.append(full_path)
             continue
 
         parameters[full_path] = ParameterDef(
@@ -137,105 +130,68 @@ def measure_remaining_impact(
             f"Impact scan: {len(candidate_names)} candidates -> {len(parameters)} optimizable ("
             + f"{skipped_not_in_base} not in base, {skipped_no_values} no values, {skipped_single_value} single value)",
         )
-        if skipped_no_values_names:
-            dbg(
-                "impact",
-                f"  No values (first 10): {skipped_no_values_names[:10]}",
-            )
-        if skipped_not_in_base_names:
-            dbg(
-                "impact",
-                f"  Not in base (first 10): {skipped_not_in_base_names[:10]}",
-            )
 
     if not parameters:
         return []
 
-    search_space = SearchSpace(parameters=parameters)
-
-    # Build initial flat options from current config.
+    # Build base flat options from current config.
     initial_flat = _build_flat_options_from_config(
         base_options, current_config, lookups.forced_options_lookup
     )
 
-    # Build fitness function.
-    def fitness(config: dict[str, Any]) -> float:  # pragma: no cover
-        flat = copy.deepcopy(initial_flat)
-        for name, val in config.items():
-            if name in flat:
-                target_type = flat[name].get("type", "str")
-                if target_type == "int":
-                    try:
-                        flat[name]["value"] = int(val)
-                    except (ValueError, TypeError):
-                        pass
-                elif target_type == "bool":
-                    flat[name]["value"] = bool(val)
-                else:
-                    flat[name]["value"] = val
-
-        # Apply forced options.
-        for forced_path, forced_value in lookups.forced_options_lookup.items():
-            if forced_path in flat:
-                flat[forced_path]["value"] = forced_value
-
-        config_string = generate_clang_format_config(flat)
-
-        from ..repo_formatter import run_clang_format_and_count_changes
-
-        changes = run_clang_format_and_count_changes(
-            config_string,
-            repo_path=repo_path,
-            process_id=process_id,
-            debug=debug,
-            file_sample_percentage=file_sample_percentage,
-            random_seed=random_seed,
-        )
-
-        if changes == -1:
-            return float("inf")
-        return changes
-
-    # Build initial config from current values.
-    initial_config = {}
-    for name in parameters:
-        if name in current_config:
-            initial_config[name] = current_config[name]
-        elif name in base_options:
-            initial_config[name] = base_options[name].get("value")
-
-    # Run nevergrad.
-    result = run_nevergrad_optimization(
-        search_space=search_space,
-        objective=fitness,
-        budget=NG_SAFETY_BUDGET,
-        num_workers=1,
-        optimizer_name="TwoPointsDE",
+    # Measure baseline fitness.
+    base_config_string = generate_clang_format_config(initial_flat)
+    base_changes = run_clang_format_and_count_changes(
+        base_config_string,
+        repo_path=repo_path,
+        process_id=process_id,
         debug=debug,
-        initial_config=initial_config,
-        convergence_threshold=10,
+        file_sample_percentage=file_sample_percentage,
+        random_seed=random_seed,
     )
+    if base_changes == -1:
+        return []
 
-    # Measure per-option impact by comparing best to initial.
-    initial_fitness = fitness(initial_config)
     if debug:  # pragma: no cover
         from ..utils import dbg
 
-        dbg(
-            "impact",
-            f"Impact scan: initial fitness={initial_fitness}, best fitness={result.best_fitness}",
-        )
+        dbg("impact", f"Impact scan: baseline fitness={base_changes}")
+
+    # For each option, try all values and find the best delta.
     scores: list[ImpactScore] = []
-    for name in parameters:
-        best_val = result.best_config.get(name)
-        init_val = initial_config.get(name)
-        if best_val is not None and best_val != init_val:
-            # Estimate impact: create a config with only this option changed.
-            solo_config = copy.deepcopy(initial_config)
-            solo_config[name] = best_val
-            solo_fitness = fitness(solo_config)
-            delta = initial_fitness - solo_fitness
-            scores.append(ImpactScore(name=name, fitness_delta=delta))
+    for name, param in parameters.items():
+        if name not in initial_flat:  # pragma: no cover
+            continue
+
+        best_delta = 0.0
+        for val in param.possible_values:
+            test_flat = copy.deepcopy(initial_flat)
+            _set_option_value(test_flat, name, val)
+
+            # Apply forced options.
+            for forced_path, forced_value in lookups.forced_options_lookup.items():
+                if forced_path in test_flat:
+                    test_flat[forced_path]["value"] = forced_value
+
+            config_string = generate_clang_format_config(test_flat)
+            changes = run_clang_format_and_count_changes(
+                config_string,
+                repo_path=repo_path,
+                process_id=process_id,
+                debug=debug,
+                file_sample_percentage=file_sample_percentage,
+                random_seed=random_seed,
+            )
+
+            if changes == -1:
+                continue
+
+            delta = base_changes - changes
+            if delta > best_delta:
+                best_delta = delta
+
+        if best_delta > 0:
+            scores.append(ImpactScore(name=name, fitness_delta=best_delta))
 
     # Sort by delta descending (most impactful first).
     scores.sort(key=lambda s: s.fitness_delta, reverse=True)

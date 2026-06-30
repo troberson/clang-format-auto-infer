@@ -284,11 +284,6 @@ def _radial_search_integers(
                     continue
                 config[param.name] = val
                 fit = fitness_fn(copy.deepcopy(config))
-                if debug:
-                    dbg(
-                        "radial-search",
-                        f"    {param.name}={val} -> fitness: {fit}",
-                    )
                 if (
                     fit < best_fit
                 ):  # pragma: no cover -- hard to trigger with mock fitness
