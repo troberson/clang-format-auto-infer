@@ -159,12 +159,23 @@ def measure_remaining_impact(
 
     # For each option, try all values and find the best delta.
     scores: list[ImpactScore] = []
+    total_tests = sum(len(p.possible_values) for p in parameters.values())
+    run_count = 0
+    from ..utils import dbg
+
     for name, param in parameters.items():
         if name not in initial_flat:  # pragma: no cover
             continue
 
         best_delta = 0.0
         for val in param.possible_values:
+            run_count += 1
+            if debug:  # pragma: no cover
+                dbg(
+                    "impact",
+                    f"  [{run_count}/{total_tests}] {name}={val}",
+                )
+
             test_flat = copy.deepcopy(initial_flat)
             _set_option_value(test_flat, name, val)
 
