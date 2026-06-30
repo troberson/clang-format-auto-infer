@@ -162,12 +162,13 @@ class TestRunIterativeOptimization:
         }
         space = SearchSpace(parameters=params)
         fitness = self._make_fitness(500.0)
-        # First call returns impactful, second returns empty (no remaining candidates).
-        impact_fn = MagicMock()
-        impact_fn.side_effect = [
-            [FakeImpactScore("X", 100.0), FakeImpactScore("Y", 10.0)],
-            [],  # No remaining candidates.
-        ]
+        # Impact called once upfront with all candidates.
+        impact_fn = MagicMock(
+            return_value=[
+                FakeImpactScore("X", 100.0),
+                FakeImpactScore("Y", 10.0),
+            ]
+        )
 
         with patch("src.optimization_engine.iterative._optimize_batch") as mock_opt:
             mock_opt.return_value = MagicMock(
@@ -184,7 +185,7 @@ class TestRunIterativeOptimization:
             )
 
         assert result.best_fitness == 500.0
-        assert impact_fn.call_count == 2
+        assert impact_fn.call_count == 1
 
     def test_stops_when_impact_below_threshold(self):
         """When top impact is below min_improvement_ratio of best fitness, stop."""
@@ -319,6 +320,59 @@ class TestRunIterativeOptimization:
             )
             call_kwargs = mock_opt.call_args[1]
             assert call_kwargs["convergence_threshold"] == 25
+
+    def test_global_polish_improvement(self):
+        """Global polish unlocks impactful options and improves fitness."""
+        params = {
+            "A": ParameterDef(
+                name="A", param_type="str", possible_values=["x", "y"], fixed=False
+            ),
+            "B": ParameterDef(
+                name="B", param_type="str", possible_values=["p", "q"], fixed=False
+            ),
+        }
+        space = SearchSpace(parameters=params)
+        fitness = self._make_fitness(500.0)
+        # Impact called once upfront with all candidates.
+        impact_fn = MagicMock(
+            return_value=[
+                FakeImpactScore("A", 100.0),
+                FakeImpactScore("B", 50.0),
+            ]
+        )
+
+        with patch("src.optimization_engine.iterative._optimize_batch") as mock_opt:
+            from src.optimization_engine.types import OptimizationResult
+
+            # Window size is 1 (max(1, int(2 * 0.2))), so 2 iterative calls + 1 global polish = 3.
+            mock_opt.side_effect = [
+                OptimizationResult(
+                    best_config={"A": "y", "B": "p"},
+                    best_fitness=500.0,
+                    evaluations_used=10,
+                ),
+                OptimizationResult(
+                    best_config={"A": "y", "B": "p"},
+                    best_fitness=500.0,
+                    evaluations_used=10,
+                ),
+                OptimizationResult(
+                    best_config={"A": "y", "B": "q"},
+                    best_fitness=400.0,
+                    evaluations_used=10,
+                ),
+            ]
+            result = run_iterative_optimization(
+                search_space=space,
+                fitness_fn=fitness,
+                initial_config={"A": "x", "B": "p"},
+                impact_fn=impact_fn,
+                impact_kwargs={},
+                debug=False,
+            )
+
+        assert result.best_fitness == 400.0
+        assert mock_opt.call_count == 3  # 2 iterative batches + global polish
 
 
 class TestOptimizeBatch:
@@ -779,7 +833,7 @@ class TestIterativeDebugPaths:
             assert mock_opt.call_count == 1
 
     def test_debug_prints_iteration_header(self):
-        """Debug mode prints iteration headers."""
+        """Debug mode prints iteration headers with window progress."""
         import io
         import sys
 
@@ -795,59 +849,19 @@ class TestIterativeDebugPaths:
         fitness = MagicMock()
         fitness.return_value = 500.0
         # Radial search fixes A (int). Impact called with X.
-        impact_fn = MagicMock(return_value=[])
-
-        old_stderr = sys.stderr
-        sys.stderr = io.StringIO()
-        try:
-            _ = run_iterative_optimization(
-                search_space=space,
-                fitness_fn=fitness,
-                initial_config={"A": 1},
-                impact_fn=impact_fn,
-                impact_kwargs={},
-                debug=True,
-            )
-        finally:
-            output = sys.stderr.getvalue()
-            sys.stderr = old_stderr
-
-        assert "Iterative Expansion Optimization" in output
-        assert "Iteration 1" in output
-
-    def test_debug_prints_no_remaining_mutable(self):
-        """Debug prints 'No remaining mutable options' when done."""
-        import io
-        import sys
-
-        # Use non-int params so radial search doesn't fix them.
-        # Impact returns a score, batch is optimized, then fixed.
-        # Next iteration: no mutable left.
-        params = {
-            "A": ParameterDef(
-                name="A",
-                param_type="str",
-                possible_values=["x", "y"],
-                fixed=False,
-            ),
-        }
-        space = SearchSpace(parameters=params)
-        fitness = MagicMock()
-        fitness.return_value = 500.0
-
-        impact_fn = MagicMock(return_value=[FakeImpactScore("A", 100.0)])
+        impact_fn = MagicMock(return_value=[FakeImpactScore("X", 100.0)])
 
         old_stderr = sys.stderr
         sys.stderr = io.StringIO()
         try:
             with patch("src.optimization_engine.iterative._optimize_batch") as mock_opt:
                 mock_opt.return_value = MagicMock(
-                    best_fitness=500.0, best_config={"A": "x"}, evaluations_used=5
+                    best_fitness=500.0, best_config={"X": "a"}, evaluations_used=5
                 )
                 _ = run_iterative_optimization(
                     search_space=space,
                     fitness_fn=fitness,
-                    initial_config={"A": "x"},
+                    initial_config={"A": 1},
                     impact_fn=impact_fn,
                     impact_kwargs={},
                     debug=True,
@@ -856,51 +870,8 @@ class TestIterativeDebugPaths:
             output = sys.stderr.getvalue()
             sys.stderr = old_stderr
 
-        assert "No remaining mutable options" in output
-
-    def test_debug_prints_no_candidates_for_impact_scan(self):
-        """Debug prints 'No candidates for impact scan' when all mutable are excluded."""
-        import io
-        import sys
-
-        # All mutable params have confidence="detected", so they're excluded from impact.
-        params = {
-            "A": ParameterDef(
-                name="A",
-                param_type="str",
-                possible_values=["x", "y"],
-                fixed=False,
-                confidence="detected",
-            ),
-            "B": ParameterDef(
-                name="B",
-                param_type="str",
-                possible_values=["a", "b"],
-                fixed=False,
-                confidence="detected",
-            ),
-        }
-        space = SearchSpace(parameters=params)
-        fitness = MagicMock(return_value=500.0)
-        impact_fn = MagicMock(return_value=[])
-
-        old_stderr = sys.stderr
-        sys.stderr = io.StringIO()
-        try:
-            _ = run_iterative_optimization(
-                search_space=space,
-                fitness_fn=fitness,
-                initial_config={"A": "x", "B": "a"},
-                impact_fn=impact_fn,
-                impact_kwargs={},
-                debug=True,
-            )
-        finally:
-            output = sys.stderr.getvalue()
-            sys.stderr = old_stderr
-
-        assert "No candidates for impact scan" in output
-        impact_fn.assert_not_called()
+        assert "Iterative Expansion Optimization" in output
+        assert "Iteration 1" in output
 
     def test_debug_prints_no_impactful_options(self):
         """Debug prints 'No impactful options found' when impact returns empty."""
@@ -918,7 +889,7 @@ class TestIterativeDebugPaths:
         space = SearchSpace(parameters=params)
         fitness = MagicMock()
         fitness.return_value = 500.0
-        # Radial search fixes A (int). Impact called with X.
+        # Radial search fixes A (int). Impact called with X, returns empty.
         impact_fn = MagicMock(return_value=[])
 
         old_stderr = sys.stderr

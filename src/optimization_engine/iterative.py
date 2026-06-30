@@ -3,10 +3,10 @@
 Flow:
 1. Analyzer fixes deterministic values.
 2. Radial search processes integer options from default outward, fixing best.
-3. Impact scan measures remaining options.
-4. Select top impactful batch (default 10%).
-5. Optimize unlocked batch with GA/nevergrad.
-6. Repeat from 3 until no impactful options remain.
+3. Impact scan measures all remaining options once.
+4. Slide a window over pre-computed impact scores.
+5. Select batch from window and optimize with GA/nevergrad.
+6. Advance window by batch size and repeat until no impactful options remain.
 7. NG penalty polish for penalty options as a group.
 
 Termination is convergence-based -- no budget limits.
@@ -50,7 +50,7 @@ def _is_penalty_option(name: str) -> bool:
     return name.startswith("Penalty")
 
 
-def _select_batch(
+def _select_batch(  # pyright: ignore[reportUnusedFunction]
     scores: list[Any],  # ImpactScore objects, sorted descending
     remaining_count: int,
     max_batch_fraction: float = MAX_BATCH_FRACTION,
@@ -432,100 +432,103 @@ def run_iterative_optimization(
                 summary=True,
             )
 
-    # Stage 2-5: Impact -> Select -> Fix -> Optimize loop.
-    iteration = 0
-    while True:
-        iteration += 1
-        remaining_mutable = current_space.mutable_parameters
-
-        if debug:
-            dbg(
-                "iterative",
-                f"--- Iteration {iteration} --- Mutable: {len(remaining_mutable)}, Fixed: {len(current_space.remaining_fixed())}",
-                summary=True,
-            )
-
-        # If no remaining mutable options, we're done.
-        if not remaining_mutable:
-            if debug:
-                dbg("iterative", "No remaining mutable options. Done.")
-            break
-
-        # Filter candidates for impact scan.
-        candidate_names, penalty_names, excluded_names = _get_impact_candidates(
-            remaining_mutable
+    # Stage 2: Compute impact once for all remaining mutable options.
+    remaining_mutable = current_space.mutable_parameters
+    candidate_names, penalty_names, excluded_names = _get_impact_candidates(
+        remaining_mutable
+    )
+    if debug:
+        dbg(
+            "impact",
+            f"Measuring impact of {len(candidate_names)} remaining options ({len(penalty_names)} penalties, {len(excluded_names)} forced/detected excluded)...",
         )
-        if debug:
-            dbg(
-                "impact",
-                f"Measuring impact of {len(candidate_names)} remaining options ({len(penalty_names)} penalties, {len(excluded_names)} forced/detected excluded)...",
-            )
 
-        if not candidate_names:
-            if debug:
-                dbg("impact", "No candidates for impact scan. Done.")
-            break
-
-        # Measure impact.
-        scores = impact_fn(
+    all_impact_scores: list[Any] = []
+    if candidate_names:
+        all_impact_scores = impact_fn(
             candidate_names=candidate_names,
             current_config=current_config,
             **impact_kwargs,
         )
 
-        if not scores:
-            if debug:
-                dbg("impact", "No impactful options found. Done.")
-            break
+    # Track all options that showed any impact for global polish.
+    impacted_options: list[str] = [s.name for s in all_impact_scores]
 
+    if debug and all_impact_scores:
+        top = min(5, len(all_impact_scores))
+        for s in all_impact_scores[:top]:
+            dbg("impact", f"{s.name}: delta={s.fitness_delta:.1f}")
+
+    if not all_impact_scores:
         if debug:
-            top = min(5, len(scores))
-            for s in scores[:top]:
-                dbg("impact", f"{s.name}: delta={s.fitness_delta:.1f}")
+            dbg("impact", "No impactful options found. Done.")
+    else:
+        # Stage 3-5: Slide window over pre-computed impact scores.
+        window_index = 0
+        iteration = 0
+        while window_index < len(all_impact_scores):
+            iteration += 1
 
-        # Check if improvement is significant enough.
-        if scores[0].fitness_delta < best_fitness * min_improvement_ratio:
+            # Compute batch size based on total remaining mutable options.
+            remaining_mutable_count = len(current_space.mutable_parameters)
+            max_batch = max(1, int(remaining_mutable_count * max_batch_fraction))
+
+            # Get the window of candidates.
+            window = all_impact_scores[window_index : window_index + max_batch]
+
+            if (
+                not window
+            ):  # pragma: no cover -- defensive guard, while condition prevents this
+                break
+
+            # Check if top impact is significant enough.
+            if window[0].fitness_delta < best_fitness * min_improvement_ratio:
+                if debug:
+                    dbg(
+                        "impact",
+                        f"Top impact ({window[0].fitness_delta:.1f}) below threshold. Done.",
+                    )
+                break
+
+            # Select batch from window using impact threshold.
+            threshold = window[0].fitness_delta * impact_threshold
+            batch_names = [s.name for s in window if s.fitness_delta >= threshold]
+
+            if not batch_names:
+                if debug:
+                    dbg("impact", "No options selected for batch. Done.")
+                break
+
             if debug:
                 dbg(
-                    "impact",
-                    f"Top impact ({scores[0].fitness_delta:.1f}) below threshold. Done.",
+                    "iterative",
+                    f"--- Iteration {iteration} --- Window: {window_index}/{len(all_impact_scores)}, Batch: {len(batch_names)}",
+                    summary=True,
                 )
-            break
+                dbg("expand", f"Optimizing batch: {batch_names}")
 
-        # Select batch to optimize.
-        batch = _select_batch(
-            scores,
-            len(remaining_mutable),
-            max_batch_fraction,
-            impact_threshold,
-        )
-        if not batch:
-            if debug:
-                dbg("impact", "No options selected for batch. Done.")
-            break
+            # Optimize the batch.
+            result = _optimize_batch(
+                search_space=current_space,
+                fitness_fn=fitness_fn,
+                current_config=current_config,
+                num_islands=num_islands,
+                population_size=population_size,
+                num_workers=num_workers,
+                convergence_threshold=convergence_threshold,
+                debug=debug,
+                tag="optimize",
+            )
 
-        if debug:
-            dbg("expand", f"Optimizing batch of {len(batch)} options: {batch}")
+            if result.best_fitness < best_fitness:
+                current_config = copy.deepcopy(result.best_config)
+                best_fitness = result.best_fitness
 
-        # Optimize the batch.
-        result = _optimize_batch(
-            search_space=current_space,
-            fitness_fn=fitness_fn,
-            current_config=current_config,
-            num_islands=num_islands,
-            population_size=population_size,
-            num_workers=num_workers,
-            convergence_threshold=convergence_threshold,
-            debug=debug,
-            tag="optimize",
-        )
+            # Fix the optimized batch.
+            current_space = current_space.fix(batch_names)
 
-        if result.best_fitness < best_fitness:
-            current_config = copy.deepcopy(result.best_config)
-            best_fitness = result.best_fitness
-
-        # Fix the optimized batch so next iteration measures only remaining options.
-        current_space = current_space.fix(batch)
+            # Advance window by the window size.
+            window_index += max_batch
 
     # Stage 6: Final penalty polish.
     # Penalties were fixed at the start, so we unlock them for group optimization.
@@ -545,6 +548,32 @@ def run_iterative_optimization(
             convergence_threshold=convergence_threshold,
             debug=debug,
             tag="penalty-polish",
+        )
+        if result.best_fitness < best_fitness:
+            current_config = copy.deepcopy(result.best_config)
+            best_fitness = result.best_fitness
+
+    # Stage 7: Global polish.
+    # Unlock all options that showed non-zero impact and let nevergrad
+    # refine their interactions. Starts from the best config found so far.
+    if impacted_options:
+        if debug:
+            dbg(
+                "global-polish",
+                f"({len(impacted_options)} impactful options)",
+                summary=True,
+            )
+        current_space = current_space.unlock(impacted_options)
+        result = _optimize_batch(
+            search_space=current_space,
+            fitness_fn=fitness_fn,
+            current_config=current_config,
+            num_islands=num_islands,
+            population_size=population_size,
+            num_workers=num_workers,
+            convergence_threshold=convergence_threshold,
+            debug=debug,
+            tag="global-polish",
         )
         if result.best_fitness < best_fitness:
             current_config = copy.deepcopy(result.best_config)

@@ -61,14 +61,14 @@ class TestFullIterativeLoop:
         )
         fitness = MagicMock(return_value=500.0)
 
-        # Radial search fixes IndentWidth. Impact measures ColumnLimit, TabWidth.
-        # batch cap = max(1, int(2*0.2)) = 1, so only 1 selected per batch.
-        # Second impact: remaining option has no impact.
-        impact_fn = MagicMock()
-        impact_fn.side_effect = [
-            [ImpactScore("ColumnLimit", 100.0), ImpactScore("TabWidth", 10.0)],
-            [],  # No more impactful options.
-        ]
+        # Radial search fixes IndentWidth. Impact measures ColumnLimit, TabWidth once.
+        # Window size = max(1, int(2*0.2)) = 1, so 2 batches needed.
+        impact_fn = MagicMock(
+            return_value=[
+                ImpactScore("ColumnLimit", 100.0),
+                ImpactScore("TabWidth", 10.0),
+            ]
+        )
 
         with patch("src.optimization_engine.iterative._optimize_batch") as mock_opt:
             mock_opt.return_value = MagicMock(
@@ -94,8 +94,8 @@ class TestFullIterativeLoop:
             )
 
         assert result.best_fitness == 500.0
-        assert impact_fn.call_count == 2
-        # Verify ColumnLimit was in first call's candidates.
+        assert impact_fn.call_count == 1
+        # Verify ColumnLimit was in call's candidates.
         first_call = impact_fn.call_args_list[0].kwargs
         assert "ColumnLimit" in first_call["candidate_names"]
 
@@ -253,16 +253,16 @@ class TestBatchSelection:
         fitness = MagicMock(return_value=500.0)
 
         # high=100, medium=60 (>= 50% of 100), lows are < 50%.
-        # First impact: high+medium selected. After fix, low1+low2 remain.
-        # Second impact: low1+low2 measured.
+        # Impact called once upfront. Window slides over pre-computed scores.
+        # Window size = max(1, int(4*0.2)) = 1. First window: high.
+        # Second window: medium. Third window: low1 (below threshold, stops).
         scores = [
             ImpactScore("high", 100.0),
             ImpactScore("medium", 60.0),
             ImpactScore("low1", 10.0),
             ImpactScore("low2", 5.0),
         ]
-        impact_fn = MagicMock()
-        impact_fn.side_effect = [scores, []]
+        impact_fn = MagicMock(return_value=scores)
 
         with patch("src.optimization_engine.iterative._optimize_batch") as mock_opt:
             mock_opt.return_value = MagicMock(
@@ -284,9 +284,8 @@ class TestBatchSelection:
             )
 
         assert result.best_fitness == 500.0
-        # First call selects high+medium. After fix, low1+low2 remain.
-        # Second call measures low1+low2 (no impact). Loop stops.
-        assert impact_fn.call_count == 2
+        # Impact called once upfront, window slides over pre-computed scores.
+        assert impact_fn.call_count == 1
 
     def test_multi_iteration_expansion(self):
         """Verify the loop can run multiple iterations, fixing batches each time."""
@@ -303,15 +302,16 @@ class TestBatchSelection:
         fitness = MagicMock(return_value=500.0)
 
         # batch cap = max(1, int(4*0.2)) = 1.
-        # Impact called 3 times:
-        # 1. X selected+optimized+fixed. 2. Y selected+optimized+fixed.
-        # 3. Z,W remain but no impact.
-        impact_fn = MagicMock()
-        impact_fn.side_effect = [
-            [ImpactScore("X", 100.0), ImpactScore("Y", 10.0)],
-            [ImpactScore("Y", 80.0), ImpactScore("Z", 10.0)],
-            [],  # Z,W have no impact.
-        ]
+        # Impact called once upfront. Window slides: X, then Y.
+        # Z has delta=10 which is below threshold (50% of 100 = 50), so stops.
+        impact_fn = MagicMock(
+            return_value=[
+                ImpactScore("X", 100.0),
+                ImpactScore("Y", 80.0),
+                ImpactScore("Z", 10.0),
+                ImpactScore("W", 5.0),
+            ]
+        )
 
         with patch("src.optimization_engine.iterative._optimize_batch") as mock_opt:
             mock_opt.return_value = MagicMock(
@@ -333,14 +333,8 @@ class TestBatchSelection:
             )
 
             assert result.best_fitness == 500.0
-            assert impact_fn.call_count == 3
-            # Verify X was fixed (not in second call's candidates).
-            second_candidates = impact_fn.call_args_list[1].kwargs["candidate_names"]
-            assert "X" not in second_candidates
-            assert "Y" in second_candidates
-            # Verify Y was fixed (not in third call's candidates).
-            third_candidates = impact_fn.call_args_list[2].kwargs["candidate_names"]
-            assert "Y" not in third_candidates
+            # Impact called once upfront.
+            assert impact_fn.call_count == 1
 
     def test_penalties_fixed_at_start(self):
         """Penalty options are fixed before the main loop and excluded from impact."""
