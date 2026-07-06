@@ -687,8 +687,9 @@ class TestIterativeDebugPaths:
         impact_fn = MagicMock(return_value=[])
 
         with patch("src.optimization_engine.iterative._optimize_batch") as mock_opt:
+            # Global polish calls _optimize_batch (unlocks non-forced options).
             mock_opt.return_value = MagicMock(
-                best_fitness=400.0, best_config={"A": 2}, evaluations_used=10
+                best_fitness=500.0, best_config={"A": 1, "X": "a"}, evaluations_used=5
             )
             result = run_iterative_optimization(
                 search_space=space,
@@ -698,9 +699,9 @@ class TestIterativeDebugPaths:
                 impact_kwargs={},
                 debug=False,
             )
-            # No _optimize_batch calls in the main loop (impact returns empty).
+            # Global polish runs (unlocks A which is detected, not forced).
             assert result.best_fitness == 500.0
-            assert mock_opt.call_count == 0
+            assert mock_opt.call_count == 1
 
     def test_debug_prints_batch_info(self):
         """Debug prints batch info when impactful options exist."""
@@ -809,8 +810,13 @@ class TestIterativeDebugPaths:
         impact_fn = MagicMock(return_value=[])
 
         with patch("src.optimization_engine.iterative._optimize_batch") as mock_opt:
-            # Penalty polish call.
+            # Penalty polish call, then global polish call.
             mock_opt.side_effect = [
+                MagicMock(
+                    best_fitness=350.0,
+                    best_config={"A": 3, "PenaltyBreakAssignment": 2},
+                    evaluations_used=5,
+                ),
                 MagicMock(
                     best_fitness=350.0,
                     best_config={"A": 3, "PenaltyBreakAssignment": 2},
@@ -826,7 +832,7 @@ class TestIterativeDebugPaths:
                 debug=False,
             )
             assert result.best_fitness == 350.0
-            assert mock_opt.call_count == 1
+            assert mock_opt.call_count == 2  # penalty polish + global polish
 
     def test_debug_prints_iteration_header(self):
         """Debug mode prints iteration headers with window progress."""
@@ -1173,9 +1179,16 @@ class TestPenaltyOptions:
             with patch("src.optimization_engine.iterative._optimize_batch") as mock_opt:
                 from src.optimization_engine.types import OptimizationResult
 
-                # Radial search fixes A. Penalty fixed at start. Impact has no candidates.
-                # Only penalty polish calls _optimize_batch.
+                # Penalty polish call, then global polish call.
                 mock_opt.side_effect = [
+                    OptimizationResult(
+                        best_config={
+                            "A": 2,
+                            "PenaltyBreakAssignment": 2,
+                        },
+                        best_fitness=400.0,
+                        evaluations_used=10,
+                    ),
                     OptimizationResult(
                         best_config={
                             "A": 2,

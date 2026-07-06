@@ -466,9 +466,6 @@ def run_iterative_optimization(
             **impact_kwargs,
         )
 
-    # Track all options that showed any impact for global polish.
-    impacted_options: list[str] = [s.name for s in all_impact_scores]
-
     if debug and all_impact_scores:
         top = min(5, len(all_impact_scores))
         for s in all_impact_scores[:top]:
@@ -546,16 +543,23 @@ def run_iterative_optimization(
         current_space = current_space.fix(penalty_options)
 
     # Stage 7: Global polish.
-    # Unlock all options that showed non-zero impact and let nevergrad
-    # refine their interactions. Starts from the best config found so far.
-    if impacted_options:
+    # Unlock all options that are not forced by the analyzer and let
+    # nevergrad refine their interactions. Starts from the best config
+    # found so far. This catches cross-option interactions that the
+    # staged approach missed.
+    non_forced = [
+        p.name
+        for p in current_space.parameters.values()
+        if p.fixed and p.confidence != "forced"
+    ]
+    if non_forced:
         if debug:
             dbg(
                 "global-polish",
-                f"({len(impacted_options)} impactful options)",
+                f"({len(non_forced)} non-forced options)",
                 summary=True,
             )
-        current_space = current_space.unlock(impacted_options)
+        current_space = current_space.unlock(non_forced)
         result = _optimize_batch(
             search_space=current_space,
             fitness_fn=fitness_fn,
