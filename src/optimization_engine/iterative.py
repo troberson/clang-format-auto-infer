@@ -38,6 +38,22 @@ NG_SAFETY_BUDGET = 10_000
 MAX_BATCH_FRACTION = 0.2
 IMPACT_THRESHOLD = 0.5
 
+# Options that only apply to non-Cpp languages.
+# clang-format has options for Java, JavaScript, ObjC, Verilog, etc.
+# that are meaningless for C/C++ projects and should be excluded.
+NON_CPP_OPTIONS: set[str] = {
+    "SortJavaStaticImport",
+    "JavaScriptQuotes",
+    "JavaScriptWrapImports",
+    "InsertTrailingCommas",
+    "ObjCBinPackProtocolList",
+    "ObjCBlockIndentWidth",
+    "ObjCBreakBeforeNestedBlockParam",
+    "ObjCSpaceAfterProperty",
+    "ObjCSpaceBeforeProtocolList",
+    "VerilogBreakBetweenInstancePorts",
+}
+
 
 def _is_penalty_option(name: str) -> bool:
     """Return True if the option is a clang-format penalty parameter.
@@ -325,8 +341,9 @@ def _get_impact_candidates(
     """Filter remaining fixed options into impact candidates.
 
     Excludes penalty parameters (relative weights, meaningless individually),
-    forced options (certain, must not change), and detected options
-    (analyzer found them deterministically).
+    forced options (certain, must not change), detected options
+    (analyzer found them deterministically), and non-Cpp options
+    (language-specific options that don't apply to C/C++ projects).
 
     Args:
         remaining_fixed: List of currently fixed parameters.
@@ -337,12 +354,16 @@ def _get_impact_candidates(
     penalty_names = [p.name for p in remaining_fixed if _is_penalty_option(p.name)]
     excluded_confidences = {"forced", "detected"}
     excluded_names = [
-        p.name for p in remaining_fixed if p.confidence in excluded_confidences
+        p.name
+        for p in remaining_fixed
+        if p.confidence in excluded_confidences or p.name in NON_CPP_OPTIONS
     ]
     candidate_names = [
         p.name
         for p in remaining_fixed
-        if not _is_penalty_option(p.name) and p.confidence not in excluded_confidences
+        if not _is_penalty_option(p.name)
+        and p.confidence not in excluded_confidences
+        and p.name not in NON_CPP_OPTIONS
     ]
     return candidate_names, penalty_names, excluded_names
 

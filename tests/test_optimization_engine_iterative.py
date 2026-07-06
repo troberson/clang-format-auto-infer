@@ -1053,6 +1053,57 @@ class TestPenaltyOptions:
         assert "IndentWidth" not in call_kwargs["candidate_names"]
         assert "ColumnLimit" in call_kwargs["candidate_names"]
 
+    def test_impact_excludes_non_cpp_options(self):
+        """Impact measurement excludes language-specific non-Cpp options."""
+        from src.optimization_engine.iterative import NON_CPP_OPTIONS
+
+        params = {
+            "ColumnLimit": ParameterDef(
+                name="ColumnLimit",
+                param_type="str",
+                possible_values=["80", "100"],
+                fixed=False,
+            ),
+            "SortJavaStaticImport": ParameterDef(
+                name="SortJavaStaticImport",
+                param_type="str",
+                possible_values=["Before", "After"],
+                fixed=False,
+            ),
+            "VerilogBreakBetweenInstancePorts": ParameterDef(
+                name="VerilogBreakBetweenInstancePorts",
+                param_type="bool",
+                possible_values=["true", "false"],
+                fixed=False,
+            ),
+        }
+        space = SearchSpace(parameters=params)
+        fitness = MagicMock(return_value=500.0)
+        impact_fn = MagicMock(return_value=[])
+
+        _ = run_iterative_optimization(
+            search_space=space,
+            fitness_fn=fitness,
+            initial_config={
+                "ColumnLimit": "80",
+                "SortJavaStaticImport": "Before",
+                "VerilogBreakBetweenInstancePorts": "true",
+            },
+            impact_fn=impact_fn,
+            impact_kwargs={},
+            debug=False,
+        )
+
+        call_kwargs = impact_fn.call_args[1]
+        # Non-Cpp options should be excluded from candidates.
+        assert "SortJavaStaticImport" not in call_kwargs["candidate_names"]
+        assert "VerilogBreakBetweenInstancePorts" not in call_kwargs["candidate_names"]
+        # Normal options should remain.
+        assert "ColumnLimit" in call_kwargs["candidate_names"]
+        # Verify NON_CPP_OPTIONS contains the expected entries.
+        assert "SortJavaStaticImport" in NON_CPP_OPTIONS
+        assert "VerilogBreakBetweenInstancePorts" in NON_CPP_OPTIONS
+
     def test_penalty_polish_unlocks_and_optimizes(self):
         """Final penalty polish unlocks penalty options and runs optimizer."""
         params = {

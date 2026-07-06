@@ -12,7 +12,7 @@ Two entry points:
 from __future__ import annotations
 
 import copy
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, override
 
 from ..clang_format_parser import generate_clang_format_config
@@ -220,7 +220,7 @@ def measure_remaining_impact(
             for idx, task in enumerate(test_tasks)
         }
         completed = 0
-        for future in futures:
+        for future in as_completed(futures):
             completed += 1
             name, delta = future.result()
             if delta > deltas.get(name, 0.0):
