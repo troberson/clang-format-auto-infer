@@ -527,6 +527,13 @@ def run_iterative_optimization(
                 current_config = copy.deepcopy(result.best_config)
                 best_fitness = result.best_fitness
 
+            if debug:
+                dbg(
+                    "iterative",
+                    f"summary: Batch optimized to fitness={best_fitness}",
+                    summary=True,
+                )
+
             # Fix the optimized batch.
             current_space = current_space.fix(batch_names)
 
