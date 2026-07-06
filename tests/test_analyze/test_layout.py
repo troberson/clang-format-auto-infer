@@ -63,7 +63,7 @@ class TestDetectColumnLimit:
         result = detect_column_limit([str(p)], debug=True)
         assert result == 80
         captured = capsys.readouterr()
-        assert "Column limit percentiles:" in captured.err
+        assert "Column limit percentiles (tab_width=" in captured.err
         assert "95%=80" in captured.err
         assert "Snapped" in captured.err
 
@@ -75,6 +75,30 @@ class TestDetectColumnLimit:
         assert result == 150
         captured = capsys.readouterr()
         assert "No snap" in captured.err
+
+    def test_dual_tab_width_picks_best_snap(self, tmp_path: Path):
+        """When tabs are present, try both tab_width=4 and tab_width=8, pick best snap."""
+        p = tmp_path / "a.c"
+        # 2 tabs + 72 chars = 80 visual at tab_width=4, but 16+72=88 at tab_width=8
+        # With tab_width=4, 80 snaps perfectly to standard 80
+        # With tab_width=8, 88 is 8 away from 80, 12 away from 100
+        _ = p.write_text("\t\t" + "x" * 72 + "\n")
+        result = detect_column_limit([str(p)])
+        assert result == 80
+
+    def test_fallback_tab_width_snaps(self, tmp_path: Path, capsys):
+        """When both tw=4 and tw=8 fail to snap, fallback to provided tab_width."""
+        p = tmp_path / "a.c"
+        # 30 tabs + 20 chars:
+        #   tw=4: 4*30+20=140 (12 from 128, no snap)
+        #   tw=8: 8*30+20=260 (way above, no snap)
+        #   tw=2: 2*30+20=80 (snaps to 80)
+        line = "\t" * 30 + "x" * 20
+        _ = p.write_text("\n".join([line for _ in range(20)]) + "\n")
+        result = detect_column_limit([str(p)], tab_width=2, debug=True)
+        assert result == 80
+        captured = capsys.readouterr()
+        assert "Snapped 80 -> 80" in captured.err
 
 
 class TestDetectAccessModifierOffset:
