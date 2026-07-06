@@ -344,13 +344,8 @@ class TestRunIterativeOptimization:
         with patch("src.optimization_engine.iterative._optimize_batch") as mock_opt:
             from src.optimization_engine.types import OptimizationResult
 
-            # Window size is 1 (max(1, int(2 * 0.2))), so 2 iterative calls + 1 global polish = 3.
+            # All impactful options in one batch, then global polish = 2 calls.
             mock_opt.side_effect = [
-                OptimizationResult(
-                    best_config={"A": "y", "B": "p"},
-                    best_fitness=500.0,
-                    evaluations_used=10,
-                ),
                 OptimizationResult(
                     best_config={"A": "y", "B": "p"},
                     best_fitness=500.0,
@@ -372,7 +367,7 @@ class TestRunIterativeOptimization:
             )
 
         assert result.best_fitness == 400.0
-        assert mock_opt.call_count == 3  # 2 iterative batches + global polish
+        assert mock_opt.call_count == 2  # 1 iterative batch + global polish
 
 
 class TestOptimizeBatch:
@@ -707,8 +702,8 @@ class TestIterativeDebugPaths:
             assert result.best_fitness == 500.0
             assert mock_opt.call_count == 0
 
-    def test_debug_prints_no_batch_selected(self):
-        """Debug prints when _select_batch returns empty."""
+    def test_debug_prints_batch_info(self):
+        """Debug prints batch info when impactful options exist."""
         import io
         import sys
 
@@ -724,27 +719,28 @@ class TestIterativeDebugPaths:
         fitness = MagicMock()
         fitness.return_value = 500.0
         # Radial search fixes A (int). Impact called with X.
-        # Score is high enough to pass improvement threshold, but
-        # impact_threshold=2.0 means no score can pass (threshold > max_score).
         impact_fn = MagicMock(return_value=[FakeImpactScore("X", 100.0)])
 
         old_stderr = sys.stderr
         sys.stderr = io.StringIO()
         try:
-            _ = run_iterative_optimization(
-                search_space=space,
-                fitness_fn=fitness,
-                initial_config={"A": 1},
-                impact_fn=impact_fn,
-                impact_kwargs={},
-                impact_threshold=2.0,  # Forces _select_batch to return empty.
-                debug=True,
-            )
+            with patch("src.optimization_engine.iterative._optimize_batch") as mock_opt:
+                mock_opt.return_value = MagicMock(
+                    best_fitness=500.0, best_config={"X": "a"}, evaluations_used=5
+                )
+                _ = run_iterative_optimization(
+                    search_space=space,
+                    fitness_fn=fitness,
+                    initial_config={"A": 1},
+                    impact_fn=impact_fn,
+                    impact_kwargs={},
+                    debug=True,
+                )
         finally:
             output = sys.stderr.getvalue()
             sys.stderr = old_stderr
 
-        assert "No options selected for batch" in output
+        assert "Batch: 1 impactful options" in output
 
     def test_debug_prints_unlocking(self):
         """Debug prints when options are optimized."""
@@ -909,8 +905,8 @@ class TestIterativeDebugPaths:
 
         assert "No impactful options found" in output
 
-    def test_debug_prints_below_threshold(self):
-        """Debug prints threshold message when impact is too low."""
+    def test_stops_when_impact_below_threshold(self):
+        """When top impact is below min_improvement_ratio of best fitness, stop."""
         import io
         import sys
 
@@ -926,6 +922,7 @@ class TestIterativeDebugPaths:
         fitness = MagicMock()
         fitness.return_value = 500.0
         # Radial search fixes A (int). Impact called with X.
+        # Delta=1.0 is below min_improvement_ratio=0.01 of best_fitness=500 (threshold=5).
         impact_fn = MagicMock(return_value=[FakeImpactScore("X", 1.0)])
 
         old_stderr = sys.stderr

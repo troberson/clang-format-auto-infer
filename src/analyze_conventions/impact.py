@@ -1,9 +1,8 @@
-"""Empirical impact measurement via lightweight nevergrad run.
+"""Empirical impact measurement via exhaustive per-option testing.
 
-Instead of flipping each option individually, run a small nevergrad
-optimization over a set of candidate options. Options that the optimizer
-changes to improve fitness are high-impact. Options that never move are
-low-impact.
+For each candidate option, try all possible values individually (keeping
+everything else fixed) and report the best fitness delta. This is more
+thorough than relying on a black-box optimizer to discover impactful options.
 
 Two entry points:
 - measure_impact: classifies detected options into tiers (resolve/structure/polish).
@@ -13,6 +12,7 @@ Two entry points:
 from __future__ import annotations
 
 import copy
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, override
 
 from ..clang_format_parser import generate_clang_format_config
@@ -67,6 +67,8 @@ def measure_remaining_impact(
     debug: bool = False,
     file_sample_percentage: float = 100.0,
     random_seed: int = 42,
+    num_workers: int = 1,
+    repo_paths: list[str] | None = None,
 ) -> list[ImpactScore]:
     """Score the impact of remaining options by trying all values individually.
 
@@ -158,49 +160,84 @@ def measure_remaining_impact(
         dbg("impact", f"Impact scan: baseline fitness={base_changes}")
 
     # For each option, try all values and find the best delta.
-    scores: list[ImpactScore] = []
-    total_tests = sum(len(p.possible_values) for p in parameters.values())
-    run_count = 0
-    from ..utils import dbg
-
+    # Build list of (option_name, value) pairs to test.
+    test_tasks: list[tuple[str, Any]] = []
     for name, param in parameters.items():
-        if name not in initial_flat:  # pragma: no cover
-            continue
-
-        best_delta = 0.0
         for val in param.possible_values:
-            run_count += 1
-            if debug:  # pragma: no cover
+            test_tasks.append((name, val))
+
+    if debug:  # pragma: no cover
+        from ..utils import dbg
+
+        dbg(
+            "impact",
+            f"Impact scan: {len(test_tasks)} value tests across {len(parameters)} options ({num_workers} workers)",
+        )
+
+    # Use all available repos if provided, otherwise fall back to single repo.
+    available_repos = repo_paths if repo_paths else [repo_path]
+    num_repos = len(available_repos)
+
+    # Define the per-task function.
+    forced = lookups.forced_options_lookup
+
+    def evaluate_task(task: tuple[str, Any], idx: int) -> tuple[str, float]:
+        """Return (option_name, best_delta) for a single (name, value) test."""
+        name, val = task
+        # Round-robin across repos to avoid git lock collisions.
+        worker_repo = available_repos[idx % num_repos]
+        worker_id = idx % num_repos
+
+        test_flat = copy.deepcopy(initial_flat)
+        _set_option_value(test_flat, name, val)
+
+        # Apply forced options.
+        for forced_path, forced_value in forced.items():
+            if forced_path in test_flat:
+                test_flat[forced_path]["value"] = forced_value
+
+        config_string = generate_clang_format_config(test_flat)
+        changes = run_clang_format_and_count_changes(
+            config_string,
+            repo_path=worker_repo,
+            process_id=worker_id,
+            debug=debug,
+            file_sample_percentage=file_sample_percentage,
+            random_seed=random_seed,
+        )
+
+        if changes == -1:
+            return (name, 0.0)
+
+        delta = base_changes - changes
+        return (name, max(0.0, delta))
+
+    # Run evaluations in parallel.
+    deltas: dict[str, float] = {}
+    with ThreadPoolExecutor(max_workers=num_workers) as executor:
+        futures = {
+            executor.submit(evaluate_task, task, idx): task
+            for idx, task in enumerate(test_tasks)
+        }
+        completed = 0
+        for future in futures:
+            completed += 1
+            name, delta = future.result()
+            if delta > deltas.get(name, 0.0):
+                deltas[name] = delta
+            if (
+                debug and completed % max(1, len(test_tasks) // 10) == 0
+            ):  # pragma: no cover
+                from ..utils import dbg
+
                 dbg(
                     "impact",
-                    f"  [{run_count}/{total_tests}] {name}={val}",
+                    f"  progress: {completed}/{len(test_tasks)}",
                 )
 
-            test_flat = copy.deepcopy(initial_flat)
-            _set_option_value(test_flat, name, val)
-
-            # Apply forced options.
-            for forced_path, forced_value in lookups.forced_options_lookup.items():
-                if forced_path in test_flat:
-                    test_flat[forced_path]["value"] = forced_value
-
-            config_string = generate_clang_format_config(test_flat)
-            changes = run_clang_format_and_count_changes(
-                config_string,
-                repo_path=repo_path,
-                process_id=process_id,
-                debug=debug,
-                file_sample_percentage=file_sample_percentage,
-                random_seed=random_seed,
-            )
-
-            if changes == -1:
-                continue
-
-            delta = base_changes - changes
-            if delta > best_delta:
-                best_delta = delta
-
+    # Build scores from best deltas.
+    scores: list[ImpactScore] = []
+    for name, best_delta in deltas.items():
         if best_delta > 0:
             scores.append(ImpactScore(name=name, fitness_delta=best_delta))
 

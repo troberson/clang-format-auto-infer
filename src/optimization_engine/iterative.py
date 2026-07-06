@@ -25,12 +25,6 @@ from .types import OptimizationResult, ParameterDef, SearchSpace
 # Fitness function signature: takes a config dict, returns a float (lower is better).
 FitnessFn = Callable[[dict[str, Any]], float]
 
-# Maximum fraction of remaining options to unlock per iteration.
-MAX_BATCH_FRACTION = 0.2
-
-# Minimum fraction of top impact score to include in batch.
-IMPACT_THRESHOLD = 0.5
-
 # Minimum fitness improvement ratio to consider an iteration impactful.
 MIN_IMPROVEMENT_RATIO = 0.01
 
@@ -39,6 +33,10 @@ CONVERGENCE_THRESHOLD = 20
 
 # Safety cap for nevergrad evaluations. Convergence fires first in practice.
 NG_SAFETY_BUDGET = 10_000
+
+# Batch selection limits (used by _select_batch, kept for testing).
+MAX_BATCH_FRACTION = 0.2
+IMPACT_THRESHOLD = 0.5
 
 
 def _is_penalty_option(name: str) -> bool:
@@ -358,8 +356,6 @@ def run_iterative_optimization(
     num_islands: int = 1,
     population_size: int = 4,
     num_workers: int = 1,
-    max_batch_fraction: float = MAX_BATCH_FRACTION,
-    impact_threshold: float = IMPACT_THRESHOLD,
     min_improvement_ratio: float = MIN_IMPROVEMENT_RATIO,
     convergence_threshold: int = CONVERGENCE_THRESHOLD,
     debug: bool = False,
@@ -388,8 +384,6 @@ def run_iterative_optimization(
         num_islands: GA island count.
         population_size: GA population size.
         num_workers: nevergrad worker count.
-        max_batch_fraction: Max fraction of remaining to unlock per batch.
-        impact_threshold: Min fraction of top impact score to include.
         min_improvement_ratio: Min ratio of fitness improvement to continue.
         convergence_threshold: Stop optimizer sub-runs early when no improvement
             occurs for this many consecutive generations/evaluations.
@@ -463,46 +457,23 @@ def run_iterative_optimization(
         if debug:
             dbg("impact", "No impactful options found. Done.")
     else:
-        # Stage 3-5: Slide window over pre-computed impact scores.
-        window_index = 0
-        iteration = 0
-        while window_index < len(all_impact_scores):
-            iteration += 1
+        # Stage 3-5: Optimize all impactful options in one batch.
+        # The impact scan already filtered to options that matter, so we
+        # let the optimizer find the best combination of all of them.
+        batch_names = [s.name for s in all_impact_scores]
 
-            # Compute batch size based on total remaining mutable options.
-            remaining_mutable_count = len(current_space.mutable_parameters)
-            max_batch = max(1, int(remaining_mutable_count * max_batch_fraction))
-
-            # Get the window of candidates.
-            window = all_impact_scores[window_index : window_index + max_batch]
-
-            if (
-                not window
-            ):  # pragma: no cover -- defensive guard, while condition prevents this
-                break
-
-            # Check if top impact is significant enough.
-            if window[0].fitness_delta < best_fitness * min_improvement_ratio:
-                if debug:
-                    dbg(
-                        "impact",
-                        f"Top impact ({window[0].fitness_delta:.1f}) below threshold. Done.",
-                    )
-                break
-
-            # Select batch from window using impact threshold.
-            threshold = window[0].fitness_delta * impact_threshold
-            batch_names = [s.name for s in window if s.fitness_delta >= threshold]
-
-            if not batch_names:
-                if debug:
-                    dbg("impact", "No options selected for batch. Done.")
-                break
-
+        # Check if top impact is significant enough.
+        if all_impact_scores[0].fitness_delta < best_fitness * min_improvement_ratio:
+            if debug:
+                dbg(
+                    "impact",
+                    f"Top impact ({all_impact_scores[0].fitness_delta:.1f}) below threshold. Done.",
+                )
+        else:
             if debug:
                 dbg(
                     "iterative",
-                    f"--- Iteration {iteration} --- Window: {window_index}/{len(all_impact_scores)}, Batch: {len(batch_names)}",
+                    f"--- Iteration 1 --- Batch: {len(batch_names)} impactful options",
                     summary=True,
                 )
                 dbg("expand", f"Optimizing batch: {batch_names}")
@@ -527,9 +498,6 @@ def run_iterative_optimization(
             # Fix the optimized batch.
             current_space = current_space.fix(batch_names)
 
-            # Advance window by the window size.
-            window_index += max_batch
-
     # Stage 6: Final penalty polish.
     # Penalties were fixed at the start, so we unlock them for group optimization.
     remaining_fixed = current_space.remaining_fixed()
@@ -552,6 +520,9 @@ def run_iterative_optimization(
         if result.best_fitness < best_fitness:
             current_config = copy.deepcopy(result.best_config)
             best_fitness = result.best_fitness
+
+        # Re-fix penalties so global-polish only refines impacted options.
+        current_space = current_space.fix(penalty_options)
 
     # Stage 7: Global polish.
     # Unlock all options that showed non-zero impact and let nevergrad

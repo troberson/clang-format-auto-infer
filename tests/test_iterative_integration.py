@@ -10,8 +10,6 @@ from unittest.mock import MagicMock
 
 from src.analyze_conventions.impact import ImpactScore
 from src.optimization_engine.iterative import (
-    IMPACT_THRESHOLD,
-    MAX_BATCH_FRACTION,
     MIN_IMPROVEMENT_RATIO,
     run_iterative_optimization,
 )
@@ -227,8 +225,6 @@ class TestBatchSelection:
                 initial_config={},
                 impact_fn=impact_fn,
                 impact_kwargs={},
-                max_batch_fraction=MAX_BATCH_FRACTION,
-                impact_threshold=IMPACT_THRESHOLD,
                 num_islands=1,
                 population_size=2,
                 num_workers=1,
@@ -275,8 +271,6 @@ class TestBatchSelection:
                 initial_config={},
                 impact_fn=impact_fn,
                 impact_kwargs={},
-                max_batch_fraction=MAX_BATCH_FRACTION,
-                impact_threshold=IMPACT_THRESHOLD,
                 num_islands=1,
                 population_size=2,
                 num_workers=1,
@@ -324,8 +318,6 @@ class TestBatchSelection:
                 initial_config={},
                 impact_fn=impact_fn,
                 impact_kwargs={},
-                max_batch_fraction=MAX_BATCH_FRACTION,
-                impact_threshold=IMPACT_THRESHOLD,
                 num_islands=1,
                 population_size=2,
                 num_workers=1,

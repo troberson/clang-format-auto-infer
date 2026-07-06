@@ -461,6 +461,8 @@ def cmd_optimize(args: argparse.Namespace) -> None:
                 process_id=0,
                 debug=debug_mode,
                 file_sample_percentage=args.file_sample_percentage,
+                num_workers=num_jobs,
+                repo_paths=temp_repo_paths,
             ),
             num_islands=num_jobs,
             population_size=4,
