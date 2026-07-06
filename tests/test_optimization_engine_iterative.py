@@ -1,5 +1,6 @@
 """Tests for the iterative expansion optimizer."""
 
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 from src.optimization_engine.iterative import (
@@ -19,9 +20,12 @@ from src.optimization_engine.types import (
 
 
 class FakeImpactScore:
-    def __init__(self, name: str, fitness_delta: float) -> None:
+    def __init__(
+        self, name: str, fitness_delta: float, best_value: Any | None = None
+    ) -> None:
         self.name: str = name
         self.fitness_delta: float = fitness_delta
+        self.best_value: Any | None = best_value
 
 
 def _make_search_space(
@@ -368,6 +372,51 @@ class TestRunIterativeOptimization:
 
         assert result.best_fitness == 400.0
         assert mock_opt.call_count == 2  # 1 iterative batch + global polish
+
+    def test_optimizer_seeded_with_impact_best_values(self):
+        """Optimizer receives a config seeded with impact scan best values."""
+        params = {
+            "A": ParameterDef(
+                name="A", param_type="str", possible_values=["x", "y"], fixed=False
+            ),
+        }
+        space = SearchSpace(parameters=params)
+        fitness = self._make_fitness(500.0)
+        impact_fn = MagicMock(
+            return_value=[
+                FakeImpactScore("A", 100.0, best_value="y"),
+            ]
+        )
+
+        with patch("src.optimization_engine.iterative._optimize_batch") as mock_opt:
+            from src.optimization_engine.types import OptimizationResult
+
+            mock_opt.side_effect = [
+                OptimizationResult(
+                    best_config={"A": "y"},
+                    best_fitness=400.0,
+                    evaluations_used=10,
+                ),
+                OptimizationResult(
+                    best_config={"A": "y"},
+                    best_fitness=400.0,
+                    evaluations_used=10,
+                ),
+            ]
+            _ = run_iterative_optimization(
+                search_space=space,
+                fitness_fn=fitness,
+                initial_config={"A": "x"},
+                impact_fn=impact_fn,
+                impact_kwargs={},
+                debug=False,
+            )
+
+            # First call should be seeded with best_value "y" from impact scan.
+            first_call = mock_opt.call_args_list[0]
+            seeded_config = first_call[1]["current_config"]
+            assert seeded_config["A"] == "y"
+            assert mock_opt.call_count == 2  # optimize batch + global polish
 
 
 class TestOptimizeBatch:
@@ -994,6 +1043,57 @@ class TestIterativeDebugPaths:
             sys.stderr = old_stderr
 
         assert "[penalty-polish]" in output
+
+    def test_debug_prints_seeding_info(self):
+        """Debug prints when impact scan best values are used to seed optimizer."""
+        import io
+        import sys
+
+        params = {
+            "A": ParameterDef(
+                name="A", param_type="str", possible_values=["x", "y"], fixed=False
+            ),
+        }
+        space = SearchSpace(parameters=params)
+        fitness = MagicMock()
+        fitness.return_value = 500.0
+        impact_fn = MagicMock(
+            return_value=[
+                FakeImpactScore("A", 100.0, best_value="y"),
+            ]
+        )
+
+        old_stderr = sys.stderr
+        sys.stderr = io.StringIO()
+        try:
+            with patch("src.optimization_engine.iterative._optimize_batch") as mock_opt:
+                from src.optimization_engine.types import OptimizationResult
+
+                mock_opt.side_effect = [
+                    OptimizationResult(
+                        best_config={"A": "y"},
+                        best_fitness=400.0,
+                        evaluations_used=10,
+                    ),
+                    OptimizationResult(
+                        best_config={"A": "y"},
+                        best_fitness=400.0,
+                        evaluations_used=10,
+                    ),
+                ]
+                _ = run_iterative_optimization(
+                    search_space=space,
+                    fitness_fn=fitness,
+                    initial_config={"A": "x"},
+                    impact_fn=impact_fn,
+                    impact_kwargs={},
+                    debug=True,
+                )
+        finally:
+            output = sys.stderr.getvalue()
+            sys.stderr = old_stderr
+
+        assert "Seeding A=y" in output
 
 
 class TestPenaltyOptions:

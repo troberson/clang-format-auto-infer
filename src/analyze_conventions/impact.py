@@ -46,15 +46,19 @@ def _preserve_analyzer_tiers(
 class ImpactScore:
     """Result of measuring impact for a single option."""
 
-    def __init__(self, name: str, fitness_delta: float) -> None:
+    def __init__(
+        self, name: str, fitness_delta: float, best_value: Any | None = None
+    ) -> None:
         self.name: str = name
         # Positive delta means the option reduced fitness (good).
         self.fitness_delta: float = fitness_delta
+        # The value that produced the best delta.
+        self.best_value: Any | None = best_value
 
     @override
     def __repr__(self) -> str:
         """Return string representation."""
-        return f"ImpactScore({self.name!r}, delta={self.fitness_delta:.1f})"
+        return f"ImpactScore({self.name!r}, delta={self.fitness_delta:.1f}, best={self.best_value!r})"
 
 
 def measure_remaining_impact(
@@ -181,8 +185,8 @@ def measure_remaining_impact(
     # Define the per-task function.
     forced = lookups.forced_options_lookup
 
-    def evaluate_task(task: tuple[str, Any], idx: int) -> tuple[str, float]:
-        """Return (option_name, best_delta) for a single (name, value) test."""
+    def evaluate_task(task: tuple[str, Any], idx: int) -> tuple[str, float, Any]:
+        """Return (option_name, best_delta, value) for a single (name, value) test."""
         name, val = task
         # Round-robin across repos to avoid git lock collisions.
         worker_repo = available_repos[idx % num_repos]
@@ -207,13 +211,14 @@ def measure_remaining_impact(
         )
 
         if changes == -1:
-            return (name, 0.0)
+            return (name, 0.0, val)
 
         delta = base_changes - changes
-        return (name, max(0.0, delta))
+        return (name, max(0.0, delta), val)
 
     # Run evaluations in parallel.
     deltas: dict[str, float] = {}
+    best_values: dict[str, Any] = {}
     with ThreadPoolExecutor(max_workers=num_workers) as executor:
         futures = {
             executor.submit(evaluate_task, task, idx): task
@@ -222,9 +227,10 @@ def measure_remaining_impact(
         completed = 0
         for future in as_completed(futures):
             completed += 1
-            name, delta = future.result()
+            name, delta, val = future.result()
             if delta > deltas.get(name, 0.0):
                 deltas[name] = delta
+                best_values[name] = val
             if (
                 debug and completed % max(1, len(test_tasks) // 10) == 0
             ):  # pragma: no cover
@@ -239,7 +245,11 @@ def measure_remaining_impact(
     scores: list[ImpactScore] = []
     for name, best_delta in deltas.items():
         if best_delta > 0:
-            scores.append(ImpactScore(name=name, fitness_delta=best_delta))
+            scores.append(
+                ImpactScore(
+                    name=name, fitness_delta=best_delta, best_value=best_values[name]
+                )
+            )
 
     # Sort by delta descending (most impactful first).
     scores.sort(key=lambda s: s.fitness_delta, reverse=True)

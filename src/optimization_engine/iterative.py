@@ -496,11 +496,25 @@ def run_iterative_optimization(
                 )
                 dbg("expand", f"Optimizing batch: {batch_names}")
 
+            # Seed the optimizer with the best values from the impact scan.
+            # The impact scan already found the best individual value for each
+            # option, so we start from there and let the optimizer explore
+            # interactions between them.
+            seeded_config = copy.deepcopy(current_config)
+            for score in all_impact_scores:
+                if score.best_value is not None:
+                    seeded_config[score.name] = score.best_value
+                    if debug:
+                        dbg(
+                            "expand",
+                            f"  Seeding {score.name}={score.best_value} (delta={score.fitness_delta:.0f})",
+                        )
+
             # Optimize the batch.
             result = _optimize_batch(
                 search_space=current_space,
                 fitness_fn=fitness_fn,
-                current_config=current_config,
+                current_config=seeded_config,
                 num_islands=num_islands,
                 population_size=population_size,
                 num_workers=num_workers,
