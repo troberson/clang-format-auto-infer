@@ -4,7 +4,7 @@ import re
 from collections import Counter
 
 
-def detect_column_limit(files: list[str], percentile: float = 0.90) -> int | None:
+def detect_column_limit(files: list[str], percentile: float = 0.95) -> int | None:
     """Detect natural column limit by analyzing line length distribution.
 
     Filters out lines that are likely copyright headers or other noise:
@@ -15,7 +15,7 @@ def detect_column_limit(files: list[str], percentile: float = 0.90) -> int | Non
     Tabs count as 1 character, not visual width.
     """
     STANDARD_LIMITS = [79, 80, 100, 120, 128]
-    SNAP_THRESHOLD = 5  # snap if within this many characters
+    SNAP_THRESHOLD = 10  # snap if within this many characters
 
     lengths: list[int] = []
     for fpath in files:

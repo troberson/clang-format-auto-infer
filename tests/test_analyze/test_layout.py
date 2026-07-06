@@ -35,10 +35,10 @@ class TestDetectColumnLimit:
     def test_no_snap_when_far(self, tmp_path: Path):
         """When detected value is far from any standard, return raw value."""
         p = tmp_path / "a.c"
-        _ = p.write_text("\n".join(["x" * 93 for _ in range(20)]) + "\n")
+        _ = p.write_text("\n".join(["x" * 150 for _ in range(20)]) + "\n")
         result = detect_column_limit([str(p)])
-        # 93 is >5 away from both 80 and 100
-        assert result == 93
+        # 150 is >10 away from all standard limits (79, 80, 100, 120, 128)
+        assert result == 150
 
     def test_custom_percentile(self, tmp_path: Path):
         """Lower percentile picks shorter lines."""
