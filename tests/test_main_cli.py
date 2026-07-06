@@ -245,7 +245,7 @@ class TestAnalyzeFlags:
                                     cmd_optimize(args)
 
         # Verify analyze was called with the repo path
-        mock_analyze.assert_called_once_with("/tmp")
+        mock_analyze.assert_called_once_with("/tmp", debug=False)
         # Verify build_search_space was called with analysis_results
         mock_bss.assert_called_once()
         call_kwargs = mock_bss.call_args

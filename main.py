@@ -261,7 +261,7 @@ def cmd_optimize(args: argparse.Namespace) -> None:
     analysis_results = None
     if not args.no_analyze:
         print("\nAnalyzing code conventions...", file=sys.stderr)
-        analysis_results = analyze_conventions(repo_path_abs)
+        analysis_results = analyze_conventions(repo_path_abs, debug=debug_mode)
         if analysis_results:
             print(
                 f"Detected {len(analysis_results)} convention(s) from source code.",

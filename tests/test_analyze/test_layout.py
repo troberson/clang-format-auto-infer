@@ -56,6 +56,26 @@ class TestDetectColumnLimit:
         result = detect_column_limit([str(p)], tab_width=4)
         assert result == 80
 
+    def test_debug_output(self, tmp_path: Path, capsys):
+        """Debug mode prints percentile distribution."""
+        p = tmp_path / "a.c"
+        _ = p.write_text("\n".join(["x" * 80 for _ in range(20)]) + "\n")
+        result = detect_column_limit([str(p)], debug=True)
+        assert result == 80
+        captured = capsys.readouterr()
+        assert "Column limit percentiles:" in captured.err
+        assert "95%=80" in captured.err
+        assert "Snapped" in captured.err
+
+    def test_debug_no_snap(self, tmp_path: Path, capsys):
+        """Debug mode prints no-snap message when far from standards."""
+        p = tmp_path / "a.c"
+        _ = p.write_text("\n".join(["x" * 150 for _ in range(20)]) + "\n")
+        result = detect_column_limit([str(p)], debug=True)
+        assert result == 150
+        captured = capsys.readouterr()
+        assert "No snap" in captured.err
+
 
 class TestDetectAccessModifierOffset:
     def test_detects_offset(self, tmp_path: Path):

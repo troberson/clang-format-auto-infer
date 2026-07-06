@@ -64,6 +64,7 @@ class DetectedOption:
 def analyze(
     path: str,
     percentile: float = 0.95,
+    debug: bool = False,
 ) -> dict[str, Any]:
     """Analyze a codebase and return detected conventions as a structured dict.
 
@@ -82,7 +83,7 @@ def analyze(
         return {}
 
     indent_width = detect_indent_width(files)
-    column_limit = detect_column_limit(files, percentile, indent_width)
+    column_limit = detect_column_limit(files, percentile, indent_width, debug)
     language = detect_language(files)
     access_offset = detect_access_modifier_offset(files)
     max_empty = detect_max_empty_lines(files)
@@ -203,6 +204,7 @@ def _confidence_for_indent_width(files: list[str]) -> str:
 def analyze_with_metadata(
     path: str,
     percentile: float = 0.95,
+    debug: bool = False,
 ) -> dict[str, DetectedOption]:
     """Analyze a codebase and return detected conventions with metadata.
 
@@ -222,7 +224,7 @@ def analyze_with_metadata(
 
     indent_width = detect_indent_width(files)
     indent_confidence = _confidence_for_indent_width(files)
-    column_limit = detect_column_limit(files, percentile, indent_width)
+    column_limit = detect_column_limit(files, percentile, indent_width, debug)
     language = detect_language(files)
     qualifier_align = detect_qualifier_alignment(files)
     access_offset = detect_access_modifier_offset(files)

@@ -1,6 +1,7 @@
 """Layout detectors: column limit, empty lines, access modifier offset."""
 
 import re
+import sys
 from collections import Counter
 
 
@@ -8,6 +9,7 @@ def detect_column_limit(
     files: list[str],
     percentile: float = 0.95,
     tab_width: int | None = None,
+    debug: bool = False,
 ) -> int | None:
     """Detect natural column limit by analyzing line length distribution.
 
@@ -47,6 +49,19 @@ def detect_column_limit(
     idx = int(len(lengths) * percentile)
     detected = lengths[idx]
 
+    if debug:
+        n = len(lengths)
+        debug_pcts = [0.50, 0.75, 0.90, 0.95, 0.96, 0.97, 0.98, 0.99, 1.00]
+        pctl_line = "  Column limit percentiles:"
+        for p in debug_pcts:
+            val = lengths[min(int(n * p), n - 1)]
+            pctl_line += f" {p:.0%}={val}"
+        print(pctl_line, file=sys.stderr)
+        print(
+            f"  Detected: {detected} (at {percentile:.0%}), tab_width={tab_width}, files={len(files)}",
+            file=sys.stderr,
+        )
+
     # Snap to the CLOSEST standard value if within threshold.
     best_standard = None
     best_distance = SNAP_THRESHOLD + 1
@@ -56,8 +71,18 @@ def detect_column_limit(
             best_distance = distance
             best_standard = standard
     if best_standard is not None:
+        if debug:
+            print(
+                f"  Snapped {detected} -> {best_standard} (distance {best_distance})",
+                file=sys.stderr,
+            )
         return best_standard
 
+    if debug:
+        print(
+            f"  No snap (all standards >{SNAP_THRESHOLD} away), returning {detected}",
+            file=sys.stderr,
+        )
     return detected
 
 
