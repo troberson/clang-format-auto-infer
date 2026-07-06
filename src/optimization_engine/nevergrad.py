@@ -94,7 +94,7 @@ def run_nevergrad_optimization(
     objective: Callable[[dict[str, Any]], float],
     budget: int,
     num_workers: int,
-    optimizer_name: str = "TwoPointsDE",
+    optimizer_name: str = "DiscreteDE",
     debug: bool = False,
     initial_config: dict[str, Any] | None = None,
     convergence_threshold: int | None = None,
@@ -237,13 +237,21 @@ def run_nevergrad_optimization(
                     else:
                         no_improve_count += 1
 
-                    # Check convergence
+                    # Check convergence — scale threshold by num_workers so the
+                    # optimizer explores at least one full population before
+                    # considering convergence. This prevents premature stopping
+                    # when the initial random population is all worse than baseline.
+                    effective_threshold = (
+                        convergence_threshold * num_workers
+                        if convergence_threshold is not None
+                        else None
+                    )
                     if (
-                        convergence_threshold is not None
-                        and no_improve_count >= convergence_threshold
+                        effective_threshold is not None
+                        and no_improve_count >= effective_threshold
                     ):
                         print(
-                            f"[{tag}] Nevergrad: Converged after {len(best_fitness_history)} evaluations (no improvement for {convergence_threshold} consecutive evaluations).",
+                            f"[{tag}] Nevergrad: Converged after {len(best_fitness_history)} evaluations (no improvement for {no_improve_count} consecutive evaluations, threshold={convergence_threshold} * {num_workers} workers = {effective_threshold}).",
                             file=sys.stderr,
                         )
                         interrupted = True
