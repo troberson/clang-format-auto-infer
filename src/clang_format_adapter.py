@@ -172,13 +172,22 @@ def build_search_space(
             possible_values = list(possible_values)
             # Force penalty options to be fixed, even if guessed.
             is_penalty = full_path.startswith("Penalty")
+            # Preserve the analyzer's confidence level. Options with
+            # confidence="forced" must never be unlocked by global-polish.
+            # For old-format raw values, default to "detected".
+            if is_guessed:
+                confidence = "guessed"
+            elif isinstance(raw, DetectedOption) and raw.confidence == "forced":
+                confidence = "forced"
+            else:
+                confidence = "detected"
             parameters[full_path] = ParameterDef(
                 name=full_path,
                 param_type=option_info["type"],
                 possible_values=possible_values,
                 fixed=not is_guessed or is_penalty,
                 tier=tier,
-                confidence="guessed" if is_guessed else "detected",
+                confidence=confidence,
             )
             continue
 
