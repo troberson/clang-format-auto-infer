@@ -4,15 +4,20 @@ import re
 from collections import Counter
 
 
-def detect_column_limit(files: list[str], percentile: float = 0.95) -> int | None:
+def detect_column_limit(
+    files: list[str],
+    percentile: float = 0.95,
+    tab_width: int | None = None,
+) -> int | None:
     """Detect natural column limit by analyzing line length distribution.
 
     Filters out lines that are likely copyright headers or other noise:
     - Lines longer than 200 chars are excluded (likely copyright/legal text)
     - Lines that are pure comments starting with /* or // and very long
 
-    Counts printable characters, matching clang-format's ColumnLimit behavior.
-    Tabs count as 1 character, not visual width.
+    When tab_width is provided, expands tabs to visual width for accurate
+    column limit detection. This is important for tab-indented codebases
+    where raw character count underestimates visual width.
     """
     STANDARD_LIMITS = [79, 80, 100, 120, 128]
     SNAP_THRESHOLD = 10  # snap if within this many characters
@@ -22,9 +27,12 @@ def detect_column_limit(files: list[str], percentile: float = 0.95) -> int | Non
         try:
             with open(fpath, errors="replace") as f:
                 for line in f:
-                    # Count printable characters, matching clang-format's ColumnLimit.
-                    # clang-format counts tabs as 1 character, not visual width.
-                    length = len(line.rstrip("\n\r"))
+                    raw = line.rstrip("\n\r")
+                    if tab_width and tab_width > 0 and "\t" in raw:
+                        # Expand tabs to visual width for accurate detection
+                        length = len(raw.expandtabs(tab_width))
+                    else:
+                        length = len(raw)
                     if length > 200:
                         continue  # skip obvious outliers
                     if length > 0:

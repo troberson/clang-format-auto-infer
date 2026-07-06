@@ -82,7 +82,7 @@ def analyze(
         return {}
 
     indent_width = detect_indent_width(files)
-    column_limit = detect_column_limit(files, percentile)
+    column_limit = detect_column_limit(files, percentile, indent_width)
     language = detect_language(files)
     access_offset = detect_access_modifier_offset(files)
     max_empty = detect_max_empty_lines(files)
@@ -222,7 +222,7 @@ def analyze_with_metadata(
 
     indent_width = detect_indent_width(files)
     indent_confidence = _confidence_for_indent_width(files)
-    column_limit = detect_column_limit(files, percentile)
+    column_limit = detect_column_limit(files, percentile, indent_width)
     language = detect_language(files)
     qualifier_align = detect_qualifier_alignment(files)
     access_offset = detect_access_modifier_offset(files)

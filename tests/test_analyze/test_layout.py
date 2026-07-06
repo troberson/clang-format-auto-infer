@@ -48,6 +48,14 @@ class TestDetectColumnLimit:
         result = detect_column_limit([str(p)], percentile=0.50)
         assert result == 50
 
+    def test_tab_expansion(self, tmp_path: Path):
+        """Tabs are expanded to visual width when tab_width is provided."""
+        p = tmp_path / "a.c"
+        # 2 tabs (width 8) + 72 chars = 80 visual width
+        _ = p.write_text("\t\t" + "x" * 72 + "\n")
+        result = detect_column_limit([str(p)], tab_width=4)
+        assert result == 80
+
 
 class TestDetectAccessModifierOffset:
     def test_detects_offset(self, tmp_path: Path):
