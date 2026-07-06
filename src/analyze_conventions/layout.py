@@ -15,7 +15,7 @@ def detect_column_limit(
 
     Expands tabs to their visual width before measuring.
     """
-    STANDARD_LIMITS = [40, 72, 79, 80, 100, 120]
+    STANDARD_LIMITS = [79, 80, 100, 120, 128]
     SNAP_THRESHOLD = 5  # snap if within this many characters
 
     lengths: list[int] = []
